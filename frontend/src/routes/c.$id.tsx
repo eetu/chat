@@ -52,6 +52,25 @@ const ChatView = () => {
     }
   }
 
+  // Available models on the server — used to reconcile the seeded model
+  // against the live list. Stale localStorage entries (e.g. a model that
+  // was pulled or renamed upstream) would otherwise leave the picker
+  // pointing at a non-existent model.
+  const { data: modelsData } = useSWR("/api/models", api.models);
+  const availableModels = useMemo(
+    () =>
+      (modelsData?.models ?? [])
+        .map((m) => m.name)
+        .filter((n): n is string => !!n),
+    [modelsData],
+  );
+  if (
+    availableModels.length > 0 &&
+    (!model || !availableModels.includes(model))
+  ) {
+    setModel(availableModels[0]);
+  }
+
   const onModelChange = (next: string) => {
     setModel(next);
     try {
