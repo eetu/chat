@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -e
+
+ROOT=$(git rev-parse --show-toplevel)
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+
+if echo "$STAGED" | grep -q "^frontend/"; then
+  echo "Running frontend lint + format..."
+  (cd "$ROOT/frontend" && yarn lint)
+  (cd "$ROOT/frontend" && yarn format)
+fi
+
+if echo "$STAGED" | grep -q "^backend/"; then
+  echo "Running backend clippy..."
+  (cd "$ROOT/backend" && cargo clippy -- -D warnings)
+fi

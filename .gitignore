@@ -1,0 +1,19 @@
+# Backend
+backend/target/
+backend/chat.db
+backend/chat.db-shm
+backend/chat.db-wal
+backend/.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.yarn/cache/
+frontend/.yarn/install-state.gz
+frontend/.yarn/build-state.yml
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

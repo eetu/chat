@@ -1,0 +1,270 @@
+use std::sync::Arc;
+
+use actix_web_lab::sse;
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+
+use crate::AppState;
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    /// Base64-encoded images (no `data:` prefix). Forwarded to Ollama on
+    /// vision-capable models. Omitted from the wire when empty so non-vision
+    /// models don't choke on the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [ChatMessage],
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaChunkMessage {
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaChunk {
+    #[serde(default)]
+    message: Option<OllamaChunkMessage>,
+    #[serde(default)]
+    done: bool,
+    #[serde(default)]
+    done_reason: Option<String>,
+}
+
+pub async fn list_models(state: &AppState) -> Result<serde_json::Value, reqwest::Error> {
+    let url = format!("{}/api/tags", state.settings.ollama_url.trim_end_matches('/'));
+    state.http_client.get(&url).send().await?.error_for_status()?.json().await
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ModelCapabilities {
+    pub vision: bool,
+    pub tools: bool,
+    pub capabilities: Vec<String>,
+    pub families: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+    #[serde(default)]
+    details: Option<ShowDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ShowDetails {
+    #[serde(default)]
+    families: Option<Vec<String>>,
+}
+
+/// Query Ollama `/api/show` and normalise the response into our caps shape.
+/// Falls back to inferring `vision` from `details.families` when the
+/// `capabilities` array is absent (older Ollama versions).
+pub async fn show_capabilities(
+    state: &AppState,
+    model: &str,
+) -> Result<ModelCapabilities, reqwest::Error> {
+    let url = format!("{}/api/show", state.settings.ollama_url.trim_end_matches('/'));
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&serde_json::json!({ "name": model }))
+        .send()
+        .await?
+        .error_for_status()?;
+    let parsed: ShowResponse = res.json().await?;
+    let families = parsed
+        .details
+        .and_then(|d| d.families)
+        .unwrap_or_default();
+    let vision_family = families
+        .iter()
+        .any(|f| matches!(f.as_str(), "clip" | "mllama" | "vision" | "siglip"));
+    let vision = parsed.capabilities.iter().any(|c| c == "vision") || vision_family;
+    let tools = parsed.capabilities.iter().any(|c| c == "tools");
+    Ok(ModelCapabilities {
+        vision,
+        tools,
+        capabilities: parsed.capabilities,
+        families,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaChatResponse {
+    message: ChatMessage,
+}
+
+/// Ask the model for a 3-6 word title summarizing one back-and-forth.
+/// Non-streaming; returns the cleaned title or an error.
+pub async fn summarize_title(
+    state: Arc<AppState>,
+    model: &str,
+    user_msg: &str,
+    assistant_msg: &str,
+) -> Result<String, reqwest::Error> {
+    let user_excerpt: String = user_msg.chars().take(500).collect();
+    let asst_excerpt: String = assistant_msg.chars().take(500).collect();
+
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content:
+                "You name conversations. Reply with a 3 to 6 word lowercase title \
+                 summarizing the conversation. No quotes. No punctuation. \
+                 No markdown. No prefixes like 'title:'. Just the title."
+                    .into(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: format!(
+                "user: {user_excerpt}\n\nassistant: {asst_excerpt}\n\n\
+                 Reply with only the title."
+            ),
+            images: None,
+        },
+    ];
+
+    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+    });
+
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let parsed: OllamaChatResponse = res.json().await?;
+    Ok(sanitize_title(&parsed.message.content))
+}
+
+fn sanitize_title(raw: &str) -> String {
+    let cleaned: String = raw
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'' || c == '.' || c == '`')
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric() || c.is_whitespace() || matches!(*c, '-' | '_' | '/'))
+        .collect();
+    cleaned.split_whitespace().take(8).collect::<Vec<_>>().join(" ")
+}
+
+pub fn resolve_model(state: &AppState, requested: Option<&str>) -> String {
+    state
+        .settings
+        .ollama_model_lock
+        .clone()
+        .or_else(|| requested.map(str::to_string))
+        .unwrap_or_else(|| "llama3.1".into())
+}
+
+#[derive(Debug)]
+pub struct StreamOutcome {
+    /// Accumulated assistant text — populated even when the stream was
+    /// aborted before completion.
+    pub content: String,
+    /// `true` if Ollama emitted `done: true`; `false` if the client
+    /// disconnected, the user pressed stop, or the upstream stream ended
+    /// without a terminal chunk.
+    pub completed: bool,
+}
+
+/// Stream a chat completion. `on_delta` is called for each non-empty content
+/// chunk; returning `false` aborts the loop (client gone / user stop) and
+/// the partial `content` is returned in the outcome so it can still be
+/// persisted.
+pub async fn stream_chat<F>(
+    state: Arc<AppState>,
+    model: &str,
+    messages: Vec<ChatMessage>,
+    mut on_delta: F,
+) -> Result<StreamOutcome, ChatStreamError>
+where
+    F: FnMut(&str) -> bool,
+{
+    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let body = OllamaChatRequest { model, messages: &messages, stream: true };
+
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(ChatStreamError::Http)?
+        .error_for_status()
+        .map_err(ChatStreamError::Http)?;
+
+    let mut stream = res.bytes_stream();
+    let mut buf = Vec::<u8>::new();
+    let mut full = String::new();
+
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(ChatStreamError::Http)?;
+        buf.extend_from_slice(&bytes);
+
+        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = buf.drain(..=pos).collect();
+            let line = &line[..line.len() - 1];
+            if line.is_empty() {
+                continue;
+            }
+            let parsed: OllamaChunk = match serde_json::from_slice(line) {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!("malformed ndjson chunk: {e}");
+                    continue;
+                }
+            };
+            if let Some(msg) = parsed.message {
+                if !msg.content.is_empty() {
+                    full.push_str(&msg.content);
+                    if !on_delta(&msg.content) {
+                        return Ok(StreamOutcome { content: full, completed: false });
+                    }
+                }
+            }
+            if parsed.done {
+                tracing::debug!(reason = ?parsed.done_reason, "ollama chunk done");
+                return Ok(StreamOutcome { content: full, completed: true });
+            }
+        }
+    }
+    Ok(StreamOutcome { content: full, completed: false })
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ChatStreamError {
+    #[error("upstream http error: {0}")]
+    Http(#[from] reqwest::Error),
+}
+
+/// Helper to wrap a delta into an SSE event with `event: delta`.
+pub fn sse_delta(content: &str) -> sse::Event {
+    sse::Event::Data(sse::Data::new(content).event("delta"))
+}
+
+/// Helper to emit a typed JSON event.
+pub fn sse_json(event: &str, value: &serde_json::Value) -> sse::Event {
+    sse::Event::Data(sse::Data::new(value.to_string()).event(event))
+}
