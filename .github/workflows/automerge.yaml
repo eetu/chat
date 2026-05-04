@@ -2,7 +2,7 @@ name: Automerge
 
 on:
   pull_request:
-    branches: [develop]
+    branches: [main]
 
 permissions:
   contents: write

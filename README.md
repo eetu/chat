@@ -122,8 +122,10 @@ wordmark glyph differs: chat bubble + accent dot vs. ring + accent dot.
 GitHub Actions in `.github/workflows/`:
 
 - `ci.yaml` — frontend (lint, format, typecheck, build) + backend (clippy
-  with `-D warnings`, test, build) on push/PR to `develop`.
+  with `-D warnings`, test, build) on push/PR to `main`.
 - `automerge.yaml` — auto-merges Dependabot PRs that pass CI.
+- `dockerimage.yaml` — builds + publishes the multi-arch GHCR image on
+  push to `main` (release branch).
 - `dependabot.yaml` — weekly updates for npm, cargo, and github-actions,
   with React, TanStack, and markdown deps grouped to keep PR noise low.
 
