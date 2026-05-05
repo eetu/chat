@@ -11,7 +11,7 @@
     "format": "prettier --check src",
     "format:fix": "prettier --write src",
     "typecheck": "tsc --noEmit",
-    "validate": "yarn lint && yarn format && yarn typecheck",
+    "validate": "yarn typecheck && yarn lint && yarn format",
     "preview": "vite preview"
   },
   "dependencies": {
