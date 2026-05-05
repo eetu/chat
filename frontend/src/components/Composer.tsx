@@ -219,7 +219,7 @@ const Composer = ({
                 ? theme.colors.text.muted
                 : theme.colors.border
           }`,
-          borderRadius: 18,
+          borderRadius: 12,
           background: theme.colors.background.light,
           padding: "10px 12px",
           transition: "border-color 120ms ease, background 120ms ease",

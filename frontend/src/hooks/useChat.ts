@@ -10,6 +10,7 @@ export function useChat(convId: string | undefined) {
   const [messages, setMessages] = useState<LiveMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [lastConvId, setLastConvId] = useState(convId);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -19,6 +20,7 @@ export function useChat(convId: string | undefined) {
     setLastConvId(convId);
     setMessages([]);
     setError(null);
+    setLoaded(false);
   }
 
   useEffect(() => {
@@ -26,10 +28,14 @@ export function useChat(convId: string | undefined) {
     let cancelled = false;
     api.getMessages(convId).then(
       (rows) => {
-        if (!cancelled) setMessages(rows);
+        if (cancelled) return;
+        setMessages(rows);
+        setLoaded(true);
       },
       (e: unknown) => {
-        if (!cancelled) setError(String(e));
+        if (cancelled) return;
+        setError(String(e));
+        setLoaded(true);
       },
     );
     return () => {
@@ -107,5 +113,5 @@ export function useChat(convId: string | undefined) {
     abortRef.current?.abort();
   }, []);
 
-  return { messages, streaming, error, send, stop };
+  return { messages, streaming, error, loaded, send, stop };
 }

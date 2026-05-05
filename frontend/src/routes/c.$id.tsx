@@ -22,7 +22,7 @@ const ChatView = () => {
   // the user scrolls up so streaming deltas don't yank them back.
   const stickRef = useRef(true);
   const [showJump, setShowJump] = useState(false);
-  const { messages, streaming, error, send, stop } = useChat(id);
+  const { messages, streaming, error, loaded, send, stop } = useChat(id);
 
   const { data: conversations } = useSWR<Conversation[]>(
     "/api/conversations",
@@ -135,6 +135,36 @@ const ChatView = () => {
   useEffect(() => {
     scrollToBottom("auto");
   }, [id]);
+
+  // Drain a pending draft handed off from the landing page. Parse during
+  // render (guarded by a ref so it runs once per conversation) and dispatch
+  // the actual send from an effect once history has loaded — sending earlier
+  // would race the empty getMessages response that overwrites optimistic
+  // state.
+  const consumedRef = useRef<string | null>(null);
+  type Pending = { content: string; images?: string[]; model?: string | null };
+  const pendingRef = useRef<Pending | null>(null);
+  if (loaded && messages.length === 0 && consumedRef.current !== id) {
+    consumedRef.current = id;
+    try {
+      const raw = window.sessionStorage.getItem(`chat:pending:${id}`);
+      if (raw) {
+        window.sessionStorage.removeItem(`chat:pending:${id}`);
+        const parsed = JSON.parse(raw) as Pending;
+        if (parsed.model) setModel(parsed.model);
+        pendingRef.current = parsed;
+      }
+    } catch {
+      // ignore storage / parse errors
+    }
+  }
+  useEffect(() => {
+    const p = pendingRef.current;
+    if (!p) return;
+    pendingRef.current = null;
+    stickRef.current = true;
+    void send(p.content, p.model ?? model ?? undefined, p.images);
+  }, [id, loaded, model, send]);
 
   // On message updates: only follow if the user is already pinned to the
   // bottom. Otherwise leave their scroll position alone.
