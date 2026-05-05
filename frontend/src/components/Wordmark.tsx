@@ -1,4 +1,5 @@
 import { useTheme } from "@emotion/react";
+import { Link } from "@tanstack/react-router";
 import { memo } from "react";
 
 import { mq } from "../mq";
@@ -20,12 +21,14 @@ const Wordmark = ({ size = 22, short = false }: WordmarkProps) => {
   const accent = theme.colors.activity.on;
 
   return (
-    <div
+    <Link
+      to="/"
       css={{
         display: "flex",
         alignItems: "center",
         gap: 10,
         color: theme.colors.text.main,
+        textDecoration: "none",
       }}
     >
       <svg
@@ -58,7 +61,7 @@ const Wordmark = ({ size = 22, short = false }: WordmarkProps) => {
         )}
         chat<span css={{ color: accent }}>.</span>
       </span>
-    </div>
+    </Link>
   );
 };
 
