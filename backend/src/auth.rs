@@ -13,6 +13,19 @@ const SESSION_KEY_USER: &str = "user";
 const SESSION_KEY_CSRF: &str = "oidc.csrf";
 const SESSION_KEY_NONCE: &str = "oidc.nonce";
 const SESSION_KEY_PKCE: &str = "oidc.pkce";
+const SESSION_KEY_NEXT: &str = "oidc.next";
+
+/// Accept only same-origin absolute paths. Rejects protocol-relative
+/// (`//evil.com`), schemes, backslashes, and empty strings. Returns the
+/// canonical path or `"/"` as default.
+fn sanitize_next(raw: Option<&str>) -> String {
+    match raw {
+        Some(s) if s.starts_with('/') && !s.starts_with("//") && !s.contains('\\') => {
+            s.to_string()
+        }
+        _ => "/".to_string(),
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AuthUser {
@@ -57,6 +70,8 @@ impl FromRequest for AuthUser {
 pub struct LoginQuery {
     /// Used in dev mode only.
     pub username: Option<String>,
+    /// Same-origin path to redirect to after successful auth.
+    pub next: Option<String>,
 }
 
 /// GET /auth/login
@@ -70,6 +85,8 @@ pub async fn login(
     session: Session,
     query: web::Query<LoginQuery>,
 ) -> HttpResponse {
+    let next = sanitize_next(query.next.as_deref());
+
     if let Some(oidc) = &state.oidc {
         let auth = oidc.authorize();
         if let Err(e) = session.insert(SESSION_KEY_CSRF, auth.csrf.secret()) {
@@ -82,6 +99,10 @@ pub async fn login(
         }
         if let Err(e) = session.insert(SESSION_KEY_PKCE, auth.pkce_verifier.secret()) {
             tracing::error!("session pkce insert: {e}");
+            return HttpResponse::InternalServerError().finish();
+        }
+        if let Err(e) = session.insert(SESSION_KEY_NEXT, &next) {
+            tracing::error!("session next insert: {e}");
             return HttpResponse::InternalServerError().finish();
         }
         return HttpResponse::Found()
@@ -99,7 +120,7 @@ pub async fn login(
         if let Err(e) = session.insert(SESSION_KEY_USER, &user) {
             tracing::error!("session insert failed: {e}");
         }
-        return HttpResponse::Found().append_header(("Location", "/")).finish();
+        return HttpResponse::Found().append_header(("Location", next)).finish();
     }
 
     HttpResponse::ServiceUnavailable().json(serde_json::json!({
@@ -151,11 +172,13 @@ pub async fn callback(
     let stored_csrf = session.get::<String>(SESSION_KEY_CSRF).ok().flatten();
     let stored_nonce = session.get::<String>(SESSION_KEY_NONCE).ok().flatten();
     let stored_pkce = session.get::<String>(SESSION_KEY_PKCE).ok().flatten();
+    let stored_next = session.get::<String>(SESSION_KEY_NEXT).ok().flatten();
 
     // Always clear the OIDC handshake values once we've read them.
     session.remove(SESSION_KEY_CSRF);
     session.remove(SESSION_KEY_NONCE);
     session.remove(SESSION_KEY_PKCE);
+    session.remove(SESSION_KEY_NEXT);
 
     let (csrf, nonce, pkce) = match (stored_csrf, stored_nonce, stored_pkce) {
         (Some(c), Some(n), Some(p)) => (c, n, p),
@@ -189,7 +212,8 @@ pub async fn callback(
         return HttpResponse::InternalServerError().finish();
     }
 
-    HttpResponse::Found().append_header(("Location", "/")).finish()
+    let dest = sanitize_next(stored_next.as_deref());
+    HttpResponse::Found().append_header(("Location", dest)).finish()
 }
 
 /// POST /auth/logout
