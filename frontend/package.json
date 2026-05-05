@@ -32,6 +32,7 @@
     "usehooks-ts": "^3.1.1"
   },
   "devDependencies": {
+    "@tanstack/eslint-plugin-router": "^1.161.6",
     "@tanstack/router-plugin": "^1.167.32",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",

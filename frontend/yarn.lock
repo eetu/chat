@@ -788,6 +788,17 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@tanstack/eslint-plugin-router@npm:^1.161.6":
+  version: 1.161.6
+  resolution: "@tanstack/eslint-plugin-router@npm:1.161.6"
+  dependencies:
+    "@typescript-eslint/utils": "npm:^8.23.0"
+  peerDependencies:
+    eslint: ^8.57.0 || ^9.0.0 || ^10.0.0
+  checksum: 10/116e48749f8ade7465f413cc10391eb1cf2667531fa72f403c408e5abc313ffccf7db4fb5546fa21dbd738c9f4ae202b5da7e1930c2e67b83d5fccad660e9a0f
+  languageName: node
+  linkType: hard
+
 "@tanstack/history@npm:1.161.6":
   version: 1.161.6
   resolution: "@tanstack/history@npm:1.161.6"
@@ -1155,7 +1166,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@typescript-eslint/utils@npm:8.59.2, @typescript-eslint/utils@npm:^8.59.1":
+"@typescript-eslint/utils@npm:8.59.2, @typescript-eslint/utils@npm:^8.23.0, @typescript-eslint/utils@npm:^8.59.1":
   version: 8.59.2
   resolution: "@typescript-eslint/utils@npm:8.59.2"
   dependencies:
@@ -1415,6 +1426,7 @@ __metadata:
   resolution: "chat-frontend@workspace:."
   dependencies:
     "@emotion/react": "npm:^11.14.0"
+    "@tanstack/eslint-plugin-router": "npm:^1.161.6"
     "@tanstack/react-router": "npm:^1.169.1"
     "@tanstack/router-plugin": "npm:^1.167.32"
     "@types/react": "npm:^19.2.14"
