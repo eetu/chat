@@ -46,12 +46,23 @@ const SwipeRow = ({
     setOffset(next);
   };
 
-  const finish = () => {
+  const finish = (e: PointerEvent<HTMLDivElement>) => {
     startXRef.current = null;
     setDragging(false);
+    // Release explicitly: iOS Safari can stall subsequent touch / scroll on
+    // unrelated elements if a captured pointer's element is unmounted (which
+    // happens when the swipe past TRIGGER_PX deletes this row) before the
+    // capture is released.
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore — capture may already be released
+    }
     if (offset <= -TRIGGER_PX) {
-      onDelete();
       setOffset(0);
+      // Defer the unmount-causing delete to the next frame so the pointer
+      // event lifecycle finishes cleanly before the row is removed.
+      requestAnimationFrame(() => onDelete());
     } else if (offset <= -REVEAL_PX) {
       setOffset(-REVEAL_PX);
     } else {
@@ -73,7 +84,9 @@ const SwipeRow = ({
         overflow: "hidden",
         userSelect: "none",
         touchAction: "pan-y",
-        "&:hover .swipe-row__x": { opacity: 1, pointerEvents: "auto" },
+        "@media (hover: hover)": {
+          "&:hover .swipe-row__x": { opacity: 1, pointerEvents: "auto" },
+        },
       }}
     >
       {/* swipe action (touch) */}
@@ -137,9 +150,11 @@ const SwipeRow = ({
             opacity: 0,
             pointerEvents: "none",
             transition: "opacity 120ms ease, background 120ms ease",
-            "&:hover": {
-              background: theme.colors.text.light,
-              color: theme.colors.error,
+            "@media (hover: hover)": {
+              "&:hover": {
+                background: theme.colors.text.light,
+                color: theme.colors.error,
+              },
             },
           }}
         >
