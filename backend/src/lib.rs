@@ -104,7 +104,11 @@ pub fn create_app(
                         .route("/{id}", web::delete().to(handlers::delete_conversation))
                         .route("/{id}/messages", web::get().to(handlers::get_messages)),
                 )
-                .route("/chat", web::post().to(handlers::chat)),
+                .service(
+                    web::resource("/chat")
+                        .app_data(web::JsonConfig::default().limit(3 * 1024 * 1024))
+                        .route(web::post().to(handlers::chat)),
+                ),
         )
         .service({
             let index_path = format!("{static_dir}/index.html");

@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 
+import { resizeImageForUpload } from "../image";
 import ModelPicker from "./ModelPicker";
 
 type Props = {
@@ -101,16 +102,12 @@ const Composer = ({
     const next = [...attached];
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("image/")) continue;
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(file);
-      });
-      // Strip the `data:image/png;base64,` prefix — Ollama wants raw base64.
-      const comma = dataUrl.indexOf(",");
-      const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
-      next.push({ base64, preview: dataUrl });
+      try {
+        const resized = await resizeImageForUpload(file);
+        next.push(resized);
+      } catch (err) {
+        console.error("image resize failed", err);
+      }
     }
     setAttached(next);
   };
