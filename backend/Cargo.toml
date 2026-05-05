@@ -8,7 +8,7 @@ actix-web = "4"
 actix-cors = "0.7"
 actix-files = "0.6"
 actix-web-lab = "0.26"
-actix-session = { version = "0.10", features = ["cookie-session"] }
+actix-session = { version = "0.11", features = ["cookie-session"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
