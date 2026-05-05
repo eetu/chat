@@ -246,15 +246,22 @@ const ChatView = () => {
           </span>
         </button>
       )}
-      <Composer
-        onSend={sendWithModel}
-        streaming={streaming}
-        onStop={stop}
-        history={userHistory}
-        model={model}
-        onModelChange={onModelChange}
-        vision={caps?.vision ?? false}
-      />
+      <div
+        css={{
+          padding: "0px 8px 16px",
+          [mq[0]]: { padding: "0px 8px 8px" },
+        }}
+      >
+        <Composer
+          onSend={sendWithModel}
+          streaming={streaming}
+          onStop={stop}
+          history={userHistory}
+          model={model}
+          onModelChange={onModelChange}
+          vision={caps?.vision ?? false}
+        />
+      </div>
     </>
   );
 };
