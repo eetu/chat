@@ -1,8 +1,7 @@
 # royale with chat
 
 <p>
-  <img src="documentation/screenshots/main.png" alt="desktop" width="73%" />
-  <img src="documentation/screenshots/mobile.png" alt="mobile" width="22%" />
+  <img src="documentation/screenshots/main.png" alt="desktop" />
 </p>
 
 Minimal, self-hosted chat UI for an Ollama endpoint on the LAN. Sibling project
