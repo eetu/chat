@@ -36,12 +36,12 @@ const Wordmark = ({ size = 22, short = false }: WordmarkProps) => {
         aria-hidden="true"
       >
         <path
-          d="M22 14H48a10 10 0 0 1 10 10V36a10 10 0 0 1-10 10H32l-10 10v-10a10 10 0 0 1-10-10V24a10 10 0 0 1 10-10z"
+          d="M20 11H44a10 10 0 0 1 10 10V33a10 10 0 0 1-10 10H30l-10 10v-10a10 10 0 0 1-10-10V21a10 10 0 0 1 10-10z"
           stroke="currentColor"
-          strokeWidth="4"
+          strokeWidth="3.5"
           strokeLinejoin="round"
         />
-        <circle cx="32" cy="30" r="6" fill={accent} />
+        <circle cx="32" cy="27" r="6" fill={accent} />
       </svg>
       <span
         css={{
