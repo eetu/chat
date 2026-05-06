@@ -3,7 +3,10 @@ import { useSWRConfig } from "swr";
 
 import { api, Message, streamChat } from "../api";
 
-type LiveMessage = Pick<Message, "role" | "content"> & { images?: string[] };
+type LiveMessage = Pick<Message, "role" | "content"> & {
+  images?: string[];
+  status?: "done" | "pending" | "error";
+};
 
 export function useChat(convId: string | undefined) {
   const { mutate } = useSWRConfig();
@@ -60,7 +63,11 @@ export function useChat(convId: string | undefined) {
       setMessages((prev) => [
         ...prev,
         { role: "user", content, images },
-        { role: "assistant", content: "" },
+        {
+          role: "assistant",
+          content: "",
+          status: mode === "image" ? "pending" : "done",
+        },
       ]);
 
       try {
@@ -117,6 +124,29 @@ export function useChat(convId: string | undefined) {
   const stop = useCallback(() => {
     abortRef.current?.abort();
   }, []);
+
+  // Poll while any message is still pending (e.g. an image generation
+  // started in another tab or before a reload). Stops as soon as the
+  // refreshed list has no pending rows.
+  const hasPending = messages.some((m) => m.status === "pending");
+  useEffect(() => {
+    if (!convId || !hasPending) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const rows = await api.getMessages(convId);
+        if (cancelled) return;
+        setMessages(rows);
+      } catch {
+        // ignore — next tick will retry
+      }
+    };
+    const id = window.setInterval(() => void tick(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [convId, hasPending]);
 
   return { messages, streaming, error, loaded, send, stop };
 }

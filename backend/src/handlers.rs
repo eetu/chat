@@ -202,18 +202,19 @@ pub async fn chat(
     let image_mode = body.mode.as_deref() == Some("image");
 
     if image_mode {
+        let pending_id = state
+            .storage
+            .append_pending_assistant(&user.sub, &conv.id)
+            .map_err(storage_actix_err)?;
         let prompt = body.content.clone();
         let model_for_gen = model.clone();
         tokio::spawn(async move {
             match ollama::generate_image(&state_clone, &model_for_gen, &prompt).await {
                 Ok(b64) => {
-                    if let Err(e) = state_clone.storage.append_message(
-                        &user_sub,
-                        &conv_id,
-                        "assistant",
-                        "",
-                        std::slice::from_ref(&b64),
-                    ) {
+                    if let Err(e) = state_clone
+                        .storage
+                        .complete_message(pending_id, "", std::slice::from_ref(&b64))
+                    {
                         tracing::error!("failed to persist generated image: {e}");
                     }
                     let _ = tx
@@ -224,11 +225,17 @@ pub async fn chat(
                         .await;
                 }
                 Err(e) => {
+                    let public = friendly_image_error(&e);
                     tracing::error!("image generation error: {e}");
+                    if let Err(persist_err) =
+                        state_clone.storage.fail_message(pending_id, &public)
+                    {
+                        tracing::error!("failed to mark message errored: {persist_err}");
+                    }
                     let _ = tx
                         .send(Ok(ollama::sse_json(
                             "error",
-                            &serde_json::json!({"message": e.to_string()}),
+                            &serde_json::json!({"message": public}),
                         )))
                         .await;
                 }
@@ -330,6 +337,29 @@ fn storage_err(e: StorageError) -> HttpResponse {
         StorageError::Sqlite(err) => {
             tracing::error!("sqlite error: {err}");
             HttpResponse::InternalServerError().finish()
+        }
+    }
+}
+
+fn friendly_image_error(e: &ollama::ChatStreamError) -> String {
+    match e {
+        ollama::ChatStreamError::EmptyImage => {
+            "image generator returned no data — the upstream runner likely \
+             crashed. check ollama logs."
+                .to_string()
+        }
+        ollama::ChatStreamError::Http(err) => {
+            if err.is_timeout() {
+                "image generation timed out".to_string()
+            } else if err.is_decode() {
+                "upstream returned an unreadable response — image runner may \
+                 have crashed mid-stream"
+                    .to_string()
+            } else if let Some(status) = err.status() {
+                format!("upstream returned {status}")
+            } else {
+                format!("upstream error: {err}")
+            }
         }
     }
 }

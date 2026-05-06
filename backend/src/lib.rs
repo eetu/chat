@@ -182,6 +182,15 @@ pub async fn run_server() -> std::io::Result<()> {
         caps_cache: CapsCache::new(),
     });
 
+    // Image generation can take >1 minute. Anything older than 5 still
+    // marked pending must have been left behind by a backend restart, so
+    // mark it errored so the UI can stop spinning.
+    match state.storage.fail_stale_pending(300) {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("startup: marked {n} stale pending message(s) as errored"),
+        Err(e) => tracing::error!("startup pending sweep failed: {e}"),
+    }
+
     storage::start_ttl_loop(state.clone());
 
     tracing::info!("starting chat server on port {port}");

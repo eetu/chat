@@ -7,6 +7,7 @@ import TypingIndicator from "./TypingIndicator";
 type DisplayMessage = Pick<Message, "role" | "content"> & {
   id?: number;
   images?: string[];
+  status?: "done" | "pending" | "error";
 };
 
 const imgSrc = (s: string) =>
@@ -76,6 +77,8 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
 
   const hasImages = !!msg.images && msg.images.length > 0;
   const hasContent = !!msg.content;
+  const isPending = msg.status === "pending";
+  const isError = msg.status === "error";
 
   return (
     <div
@@ -115,8 +118,71 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
           ))}
         </div>
       )}
-      {hasContent && <Markdown>{msg.content}</Markdown>}
-      {!hasContent && !hasImages && <TypingIndicator />}
+      {isPending && !hasImages && <ImageGenPlaceholder />}
+      {isError && !hasContent && (
+        <div
+          css={{
+            ...theme.typography.caption,
+            color: theme.colors.error,
+            fontStyle: "italic",
+          }}
+        >
+          generation failed
+        </div>
+      )}
+      {hasContent &&
+        (isError ? (
+          <div
+            css={{
+              ...theme.typography.caption,
+              color: theme.colors.error,
+              fontStyle: "italic",
+            }}
+          >
+            {msg.content}
+          </div>
+        ) : (
+          <Markdown>{msg.content}</Markdown>
+        ))}
+      {!hasContent && !hasImages && !isPending && !isError && (
+        <TypingIndicator />
+      )}
+    </div>
+  );
+};
+
+const ImageGenPlaceholder = () => {
+  const theme = useTheme();
+  return (
+    <div
+      css={{
+        width: "min(480px, 100%)",
+        aspectRatio: "1 / 1",
+        borderRadius: theme.border.radius,
+        border: `1px dashed ${theme.colors.border}`,
+        background: theme.colors.background.light,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 10,
+        color: theme.colors.text.muted,
+      }}
+    >
+      <span
+        className="material-icons-outlined"
+        css={{
+          fontSize: 36,
+          animation: "chat-pulse 1.6s ease-in-out infinite",
+          "@keyframes chat-pulse": {
+            "0%, 100%": { opacity: 0.35 },
+            "50%": { opacity: 1 },
+          },
+        }}
+      >
+        image
+      </span>
+      <div css={{ ...theme.typography.caption }}>rendering image…</div>
     </div>
   );
 };

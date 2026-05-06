@@ -43,6 +43,10 @@ pub struct Message {
     /// Base64 image attachments. Empty for non-image messages.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
+    /// Lifecycle of the message. `done` for fully-persisted messages,
+    /// `pending` for assistant rows awaiting generation, `error` for
+    /// failed generations (with the error text in `content`).
+    pub status: String,
 }
 
 impl Storage {
@@ -84,6 +88,14 @@ impl Storage {
         if let Err(e) = conn.execute("ALTER TABLE messages ADD COLUMN attachments TEXT", []) {
             if !e.to_string().to_lowercase().contains("duplicate column") {
                 tracing::debug!("attachments column migration noop: {e}");
+            }
+        }
+        if let Err(e) = conn.execute(
+            "ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'done'",
+            [],
+        ) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                tracing::debug!("status column migration noop: {e}");
             }
         }
         Ok(Self { inner: Arc::new(Mutex::new(conn)) })
@@ -204,7 +216,7 @@ impl Storage {
         self.get_conversation(user_sub, conv_id)?;
         let conn = self.inner.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, attachments FROM messages
+            "SELECT id, role, content, created_at, attachments, status FROM messages
              WHERE conv_id = ?1 ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([conv_id], |row| {
@@ -219,6 +231,7 @@ impl Storage {
                 content: row.get(2)?,
                 created_at: row.get(3)?,
                 images,
+                status: row.get(5)?,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
@@ -251,6 +264,78 @@ impl Storage {
             params![now, conv_id],
         )?;
         Ok(id)
+    }
+
+    /// Insert an empty assistant placeholder with `status='pending'`.
+    /// Used by long-running generations (image gen) so the row is visible
+    /// immediately when the user reloads or navigates back.
+    pub fn append_pending_assistant(
+        &self,
+        user_sub: &str,
+        conv_id: &str,
+    ) -> Result<i64, StorageError> {
+        self.get_conversation(user_sub, conv_id)?;
+        let now = Utc::now().timestamp();
+        let conn = self.inner.lock().unwrap();
+        conn.execute(
+            "INSERT INTO messages(conv_id, role, content, created_at, attachments, status)
+             VALUES(?1, 'assistant', '', ?2, NULL, 'pending')",
+            params![conv_id, now],
+        )?;
+        let id = conn.last_insert_rowid();
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+        Ok(id)
+    }
+
+    pub fn complete_message(
+        &self,
+        message_id: i64,
+        content: &str,
+        images: &[String],
+    ) -> Result<(), StorageError> {
+        let attachments_json = if images.is_empty() {
+            None
+        } else {
+            serde_json::to_string(images).ok()
+        };
+        let conn = self.inner.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET content = ?1, attachments = ?2, status = 'done'
+             WHERE id = ?3",
+            params![content, attachments_json, message_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn fail_message(
+        &self,
+        message_id: i64,
+        error_text: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self.inner.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET content = ?1, status = 'error' WHERE id = ?2",
+            params![error_text, message_id],
+        )?;
+        Ok(())
+    }
+
+    /// Mark `pending` rows older than `older_than_secs` as `error`. Run once
+    /// at startup so messages stuck across a backend crash don't keep the UI
+    /// in a forever-loading state.
+    pub fn fail_stale_pending(&self, older_than_secs: i64) -> Result<usize, StorageError> {
+        let cutoff = Utc::now().timestamp() - older_than_secs;
+        let conn = self.inner.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE messages SET status = 'error',
+                content = 'generation interrupted'
+             WHERE status = 'pending' AND created_at < ?1",
+            [cutoff],
+        )?;
+        Ok(n)
     }
 
     pub fn set_conversation_model(

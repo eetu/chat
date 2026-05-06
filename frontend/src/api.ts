@@ -12,6 +12,7 @@ export type Message = {
   content: string;
   created_at: number;
   images?: string[];
+  status?: "done" | "pending" | "error";
 };
 
 export type ModelCapabilities = {
