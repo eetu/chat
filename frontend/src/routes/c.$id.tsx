@@ -12,7 +12,9 @@ import { mq } from "../mq";
 
 const LAST_MODEL_KEY = "chat:lastModel";
 
-const STICK_THRESHOLD_PX = 60;
+// Re-glue when the user scrolls back within this many pixels of the bottom.
+// Kept tight so any deliberate upward scroll releases the follow.
+const REGLUE_THRESHOLD_PX = 4;
 
 const ChatView = () => {
   const theme = useTheme();
@@ -21,6 +23,7 @@ const ChatView = () => {
   // True while the viewport is glued to the bottom; flipped off the moment
   // the user scrolls up so streaming deltas don't yank them back.
   const stickRef = useRef(true);
+  const prevScrollTopRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
   const { messages, streaming, error, loaded, send, stop } = useChat(id);
 
@@ -104,10 +107,16 @@ const ChatView = () => {
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
+    const direction = el.scrollTop - prevScrollTopRef.current;
+    prevScrollTopRef.current = el.scrollTop;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const atBottom = distance < STICK_THRESHOLD_PX;
-    stickRef.current = atBottom;
-    setShowJump(!atBottom && streaming);
+    const atBottom = distance < REGLUE_THRESHOLD_PX;
+    if (direction < 0) {
+      stickRef.current = false;
+    } else if (atBottom) {
+      stickRef.current = true;
+    }
+    setShowJump(!stickRef.current && streaming);
   };
 
   // newest-first list of past user prompts, fed to the composer for
