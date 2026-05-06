@@ -53,12 +53,16 @@ const Landing = () => {
     }
   };
 
-  const onSend = async (content: string, images?: string[]) => {
+  const onSend = async (
+    content: string,
+    images?: string[],
+    mode?: "chat" | "image",
+  ) => {
     const conv = await api.createConversation({ model: model ?? undefined });
     try {
       window.sessionStorage.setItem(
         `chat:pending:${conv.id}`,
-        JSON.stringify({ content, images, model }),
+        JSON.stringify({ content, images, model, mode }),
       );
     } catch {
       // ignore
@@ -97,6 +101,8 @@ const Landing = () => {
           model={model}
           onModelChange={onModelChange}
           vision={caps?.vision ?? false}
+          chatCap={caps?.chat ?? true}
+          imageGen={caps?.image_gen ?? false}
         />
       </div>
     </div>

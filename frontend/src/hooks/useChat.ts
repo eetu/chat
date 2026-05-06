@@ -46,7 +46,12 @@ export function useChat(convId: string | undefined) {
   }, [convId]);
 
   const send = useCallback(
-    async (content: string, model?: string, images?: string[]) => {
+    async (
+      content: string,
+      model?: string,
+      images?: string[],
+      mode?: "chat" | "image",
+    ) => {
       if (!convId || streaming) return;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -60,7 +65,7 @@ export function useChat(convId: string | undefined) {
 
       try {
         for await (const evt of streamChat(
-          { conv_id: convId, content, model, images },
+          { conv_id: convId, content, model, images, mode },
           controller.signal,
         )) {
           if (evt.type === "delta") {

@@ -138,6 +138,10 @@ pub struct ChatBody {
     /// capable.
     #[serde(default)]
     pub images: Option<Vec<String>>,
+    /// "chat" (default) or "image". When "image", the prompt is forwarded
+    /// to Ollama's image generation endpoint instead of the chat stream.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 pub async fn chat(
@@ -195,6 +199,45 @@ pub async fn chat(
     let user_first = body.content.clone();
     let model_for_rename = model.clone();
     let state_clone: Arc<AppState> = state.get_ref().clone();
+    let image_mode = body.mode.as_deref() == Some("image");
+
+    if image_mode {
+        let prompt = body.content.clone();
+        let model_for_gen = model.clone();
+        tokio::spawn(async move {
+            match ollama::generate_image(&state_clone, &model_for_gen, &prompt).await {
+                Ok(b64) => {
+                    if let Err(e) = state_clone.storage.append_message(
+                        &user_sub,
+                        &conv_id,
+                        "assistant",
+                        "",
+                        std::slice::from_ref(&b64),
+                    ) {
+                        tracing::error!("failed to persist generated image: {e}");
+                    }
+                    let _ = tx
+                        .send(Ok(ollama::sse_json(
+                            "done",
+                            &serde_json::json!({"conv_id": conv_id}),
+                        )))
+                        .await;
+                }
+                Err(e) => {
+                    tracing::error!("image generation error: {e}");
+                    let _ = tx
+                        .send(Ok(ollama::sse_json(
+                            "error",
+                            &serde_json::json!({"message": e.to_string()}),
+                        )))
+                        .await;
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx);
+        return Ok(sse::Sse::from_stream(stream).with_keep_alive(std::time::Duration::from_secs(30)));
+    }
 
     tokio::spawn(async move {
         let tx_for_delta = tx.clone();

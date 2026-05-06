@@ -17,6 +17,8 @@ export type Message = {
 export type ModelCapabilities = {
   vision: boolean;
   tools: boolean;
+  chat: boolean;
+  image_gen: boolean;
   capabilities: string[];
   families: string[];
 };
@@ -80,6 +82,7 @@ export async function* streamChat(
     content: string;
     model?: string;
     images?: string[];
+    mode?: "chat" | "image";
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {

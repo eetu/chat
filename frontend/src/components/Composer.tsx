@@ -1,4 +1,4 @@
-import { useTheme } from "@emotion/react";
+import { Theme, useTheme } from "@emotion/react";
 import {
   KeyboardEvent,
   useEffect,
@@ -10,8 +10,10 @@ import {
 import { resizeImageForUpload } from "../image";
 import ModelPicker from "./ModelPicker";
 
+type Mode = "chat" | "image";
+
 type Props = {
-  onSend: (content: string, images?: string[]) => void;
+  onSend: (content: string, images?: string[], mode?: Mode) => void;
   /** When true, the send button switches to a stop button. */
   streaming?: boolean;
   /** Called when the user clicks the stop button mid-stream. */
@@ -29,6 +31,10 @@ type Props = {
   onModelChange?: (next: string) => void;
   /** When true, the + image-attach button is shown for the current model. */
   vision?: boolean;
+  /** Whether the model supports plain text chat output. */
+  chatCap?: boolean;
+  /** Whether the model supports image generation output. */
+  imageGen?: boolean;
 };
 
 /**
@@ -45,6 +51,8 @@ const Composer = ({
   model,
   onModelChange,
   vision,
+  chatCap = true,
+  imageGen = false,
 }: Props) => {
   const theme = useTheme();
   const [value, setValue] = useState("");
@@ -60,6 +68,18 @@ const Composer = ({
     { base64: string; preview: string }[]
   >([]);
   const [dragOver, setDragOver] = useState(false);
+  const [mode, setMode] = useState<Mode>(
+    imageGen && !chatCap ? "image" : "chat",
+  );
+  // Reset mode when model caps change. Image-only model → image; otherwise
+  // default to chat (user can still toggle if both are supported).
+  const [lastCapsKey, setLastCapsKey] = useState(`${chatCap}|${imageGen}`);
+  const capsKey = `${chatCap}|${imageGen}`;
+  if (lastCapsKey !== capsKey) {
+    setLastCapsKey(capsKey);
+    setMode(imageGen && !chatCap ? "image" : "chat");
+  }
+  const showModeToggle = chatCap && imageGen;
   // Counter ref so nested children's dragenter/leave events don't flicker
   // the highlight; the overlay only goes away once drag has fully left
   // the shell.
@@ -90,7 +110,7 @@ const Composer = ({
     if ((!trimmed && attached.length === 0) || streaming) return;
     const imgs =
       attached.length > 0 ? attached.map((a) => a.base64) : undefined;
-    onSend(trimmed, imgs);
+    onSend(trimmed, imgs, mode);
     setValue("");
     setAttached([]);
     if (recallIndex !== -1) setRecallIndex(-1);
@@ -347,7 +367,7 @@ const Composer = ({
           }}
         >
           <div css={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {vision && (
+            {vision && mode === "chat" && (
               <>
                 <input
                   ref={fileInputRef}
@@ -364,22 +384,7 @@ const Composer = ({
                   type="button"
                   aria-label="attach image"
                   onClick={() => fileInputRef.current?.click()}
-                  css={{
-                    width: 32,
-                    height: 32,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    border: "none",
-                    borderRadius: 8,
-                    background: "transparent",
-                    color: theme.colors.text.muted,
-                    cursor: "pointer",
-                    "&:hover": {
-                      background: theme.colors.background.main,
-                      color: theme.colors.text.main,
-                    },
-                  }}
+                  css={composerSubButtonCss(theme)}
                 >
                   <span
                     className="material-icons-outlined"
@@ -389,6 +394,30 @@ const Composer = ({
                   </span>
                 </button>
               </>
+            )}
+            {showModeToggle && (
+              <button
+                type="button"
+                aria-label={
+                  mode === "chat"
+                    ? "switch to image generation"
+                    : "switch to chat"
+                }
+                title={
+                  mode === "chat"
+                    ? "switch to image generation"
+                    : "switch to chat"
+                }
+                onClick={() => setMode(mode === "chat" ? "image" : "chat")}
+                css={composerSubButtonCss(theme)}
+              >
+                <span
+                  className="material-icons-outlined"
+                  css={{ fontSize: 22 }}
+                >
+                  {mode === "chat" ? "image" : "chat_bubble_outline"}
+                </span>
+              </button>
             )}
           </div>
           <div css={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -449,6 +478,23 @@ const iconButtonCss = (bg: string, fg: string) => ({
   background: bg,
   color: fg,
   cursor: "pointer",
+});
+
+const composerSubButtonCss = (theme: Theme) => ({
+  width: 32,
+  height: 32,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "none",
+  borderRadius: 8,
+  background: "transparent",
+  color: theme.colors.text.muted,
+  cursor: "pointer",
+  "&:hover": {
+    background: theme.colors.background.main,
+    color: theme.colors.text.main,
+  },
 });
 
 export default Composer;

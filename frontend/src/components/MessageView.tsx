@@ -74,15 +74,49 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
     );
   }
 
+  const hasImages = !!msg.images && msg.images.length > 0;
+  const hasContent = !!msg.content;
+
   return (
     <div
       css={{
         marginBottom: 22,
         wordBreak: "break-word",
         color: theme.colors.text.main,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
       }}
     >
-      {msg.content ? <Markdown>{msg.content}</Markdown> : <TypingIndicator />}
+      {hasImages && (
+        <div
+          css={{
+            display: "flex",
+            gap: 6,
+            flexWrap: "wrap",
+          }}
+        >
+          {msg.images!.map((src) => (
+            <img
+              key={src}
+              src={imgSrc(src)}
+              alt=""
+              loading="lazy"
+              css={{
+                maxWidth: 480,
+                maxHeight: 480,
+                width: "100%",
+                height: "auto",
+                borderRadius: theme.border.radius,
+                border: `1px solid ${theme.colors.border}`,
+                objectFit: "contain",
+              }}
+            />
+          ))}
+        </div>
+      )}
+      {hasContent && <Markdown>{msg.content}</Markdown>}
+      {!hasContent && !hasImages && <TypingIndicator />}
     </div>
   );
 };
