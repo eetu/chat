@@ -89,7 +89,16 @@ const SwipeRow = ({
         },
       }}
     >
-      {/* swipe action (touch) */}
+      {/* swipe action (touch) — full-bleed red panel behind the row, with
+          the click target anchored to the right so the same delete colour
+          fills however far the user has dragged. */}
+      <div
+        css={{
+          position: "absolute",
+          inset: 0,
+          background: theme.colors.error,
+        }}
+      />
       <button
         type="button"
         onClick={() => {
@@ -104,7 +113,7 @@ const SwipeRow = ({
           bottom: 0,
           width: REVEAL_PX,
           border: "none",
-          background: theme.colors.error,
+          background: "transparent",
           color: "#fff",
           fontFamily: theme.fonts.heading,
           fontSize: 13,
