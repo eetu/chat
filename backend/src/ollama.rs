@@ -209,35 +209,34 @@ pub async fn summarize_title(
     Ok(sanitize_title(&parsed.message.content))
 }
 
-/// Expand a user's short prompt into a detailed image-generation prompt.
-/// Best-effort: callers fall back to the original prompt on error.
+/// Expand a user's image-gen prompt into a detailed prompt, using the
+/// conversation history so follow-ups ("make it night", "same scene in
+/// winter") build on prior turns. Best-effort: callers fall back to the
+/// original prompt on error.
 pub async fn refine_image_prompt(
     state: Arc<AppState>,
     model: &str,
-    user_prompt: &str,
+    history: &[ChatMessage],
 ) -> Result<String, reqwest::Error> {
-    let messages = vec![
-        ChatMessage {
-            role: "system".into(),
-            content: "You rewrite short user requests as detailed prompts \
-                for an image generation model. Preserve the user's intent: \
-                keep every subject, style, setting, and constraint they named, \
-                and never contradict them. Add concrete cues that reduce \
-                common diffusion artefacts: five fingers per hand with \
-                natural pose, symmetric face, two eyes with matching gaze, \
-                coherent limb count and proportions, clean edges where \
-                objects meet. Add composition, lighting, materials, and \
-                mood. Output one paragraph, plain text. No preamble, no \
-                quotes, no markdown, no commentary."
-                .into(),
-            images: None,
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: user_prompt.to_string(),
-            images: None,
-        },
-    ];
+    let mut messages = Vec::with_capacity(history.len() + 1);
+    messages.push(ChatMessage {
+        role: "system".into(),
+        content: "You rewrite the user's latest request into a detailed prompt \
+            for an image generation model, taking earlier turns of the \
+            conversation as context (so follow-ups like \"make it night\" \
+            build on the previous image). Preserve the user's intent: keep \
+            every subject, style, setting, and constraint they named or \
+            implied, and never contradict them. Add concrete cues that \
+            reduce common diffusion artefacts: five fingers per hand with \
+            natural pose, symmetric face, two eyes with matching gaze, \
+            coherent limb count and proportions, clean edges where objects \
+            meet. Add composition, lighting, materials, and mood. Output \
+            one paragraph, plain text. No preamble, no quotes, no markdown, \
+            no commentary."
+            .into(),
+        images: None,
+    });
+    messages.extend(history.iter().cloned());
 
     let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
     let body = serde_json::json!({

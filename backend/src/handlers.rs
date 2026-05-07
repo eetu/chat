@@ -168,12 +168,23 @@ pub async fn chat(
         .storage
         .list_messages(&user.sub, &conv.id)
         .map_err(storage_actix_err)?;
+    // Drop in-flight (pending) rows so we never feed the model a turn that
+    // hasn't completed yet. Only carry images on user turns — assistant
+    // image-gen rows hold base64 PNGs we don't want re-sent to chat models.
     let messages: Vec<ChatMessage> = history
         .into_iter()
-        .map(|m| ChatMessage {
-            role: m.role,
-            content: m.content,
-            images: if m.images.is_empty() { None } else { Some(m.images) },
+        .filter(|m| m.status != "pending")
+        .map(|m| {
+            let is_user = m.role == "user";
+            ChatMessage {
+                role: m.role,
+                content: m.content,
+                images: if is_user && !m.images.is_empty() {
+                    Some(m.images)
+                } else {
+                    None
+                },
+            }
         })
         .collect();
 
@@ -209,9 +220,15 @@ pub async fn chat(
         let prompt = body.content.clone();
         let model_for_gen = model.clone();
         let refiner_model = state.settings.prompt_refiner_model.clone();
+        let refiner_history = messages.clone();
         tokio::spawn(async move {
             let refined = match refiner_model.as_deref() {
-                Some(m) => match ollama::refine_image_prompt(state_clone.clone(), m, &prompt).await
+                Some(m) => match ollama::refine_image_prompt(
+                    state_clone.clone(),
+                    m,
+                    &refiner_history,
+                )
+                .await
                 {
                     Ok(r) if !r.is_empty() => Some(r),
                     Ok(_) => None,
