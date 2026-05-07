@@ -141,6 +141,17 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
           >
             {msg.content}
           </div>
+        ) : hasImages ? (
+          <div
+            css={{
+              ...theme.typography.caption,
+              color: theme.colors.text.muted,
+              fontStyle: "italic",
+              maxWidth: 480,
+            }}
+          >
+            {msg.content}
+          </div>
         ) : (
           <Markdown>{msg.content}</Markdown>
         ))}

@@ -208,13 +208,30 @@ pub async fn chat(
             .map_err(storage_actix_err)?;
         let prompt = body.content.clone();
         let model_for_gen = model.clone();
+        let refiner_model = state.settings.prompt_refiner_model.clone();
         tokio::spawn(async move {
-            match ollama::generate_image(&state_clone, &model_for_gen, &prompt).await {
+            let refined = match refiner_model.as_deref() {
+                Some(m) => match ollama::refine_image_prompt(state_clone.clone(), m, &prompt).await
+                {
+                    Ok(r) if !r.is_empty() => Some(r),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!("prompt refinement failed: {e} (using original)");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let final_prompt = refined.as_deref().unwrap_or(prompt.as_str());
+
+            match ollama::generate_image(&state_clone, &model_for_gen, final_prompt).await {
                 Ok(b64) => {
-                    if let Err(e) = state_clone
-                        .storage
-                        .complete_message(pending_id, "", std::slice::from_ref(&b64))
-                    {
+                    let caption = refined.unwrap_or_default();
+                    if let Err(e) = state_clone.storage.complete_message(
+                        pending_id,
+                        &caption,
+                        std::slice::from_ref(&b64),
+                    ) {
                         tracing::error!("failed to persist generated image: {e}");
                     }
                     let _ = tx

@@ -209,6 +209,54 @@ pub async fn summarize_title(
     Ok(sanitize_title(&parsed.message.content))
 }
 
+/// Expand a user's short prompt into a detailed image-generation prompt.
+/// Best-effort: callers fall back to the original prompt on error.
+pub async fn refine_image_prompt(
+    state: Arc<AppState>,
+    model: &str,
+    user_prompt: &str,
+) -> Result<String, reqwest::Error> {
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content: "You rewrite short user requests as detailed prompts \
+                for an image generation model. Preserve the user's intent: \
+                keep every subject, style, setting, and constraint they named, \
+                and never contradict them. Add concrete cues that reduce \
+                common diffusion artefacts: five fingers per hand with \
+                natural pose, symmetric face, two eyes with matching gaze, \
+                coherent limb count and proportions, clean edges where \
+                objects meet. Add composition, lighting, materials, and \
+                mood. Output one paragraph, plain text. No preamble, no \
+                quotes, no markdown, no commentary."
+                .into(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: user_prompt.to_string(),
+            images: None,
+        },
+    ];
+
+    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+    });
+
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let parsed: OllamaChatResponse = res.json().await?;
+    Ok(parsed.message.content.trim().to_string())
+}
+
 fn sanitize_title(raw: &str) -> String {
     let cleaned: String = raw
         .lines()

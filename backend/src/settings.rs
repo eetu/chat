@@ -7,6 +7,10 @@ pub struct Settings {
     pub db_path: String,
     pub ollama_url: String,
     pub ollama_model_lock: Option<String>,
+    /// Chat-capable model used to expand a user's image-gen prompt into a
+    /// detailed prompt before it's sent to the image generator. Disabled
+    /// when unset.
+    pub prompt_refiner_model: Option<String>,
     pub chat_ttl_days: u32,
     pub session_key_hex: String,
     pub oidc: Option<OidcSettings>,
@@ -29,6 +33,8 @@ impl Settings {
         let ollama_url =
             env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
         let ollama_model_lock = env::var("OLLAMA_MODEL").ok().filter(|s| !s.is_empty());
+        let prompt_refiner_model =
+            env::var("PROMPT_REFINER_MODEL").ok().filter(|s| !s.is_empty());
         let chat_ttl_days = env::var("CHAT_TTL_DAYS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -57,6 +63,7 @@ impl Settings {
             db_path,
             ollama_url,
             ollama_model_lock,
+            prompt_refiner_model,
             chat_ttl_days,
             session_key_hex,
             oidc,
@@ -71,6 +78,7 @@ impl Settings {
             db_path: ":memory:".into(),
             ollama_url: "http://localhost:11434".into(),
             ollama_model_lock: None,
+            prompt_refiner_model: None,
             chat_ttl_days: 30,
             session_key_hex: "0".repeat(128),
             oidc: None,
