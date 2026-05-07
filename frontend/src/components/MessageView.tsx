@@ -28,6 +28,20 @@ const imgSrc = (s: string) =>
 const pngDataUrl = (s: string) =>
   s.startsWith("data:") ? s : `data:image/png;base64,${s}`;
 
+// Chrome blocks top-level `data:` navigation, so opening the image in
+// a new tab via `<a target="_blank">` lands on a blank page. Converting
+// to an object URL (same-origin blob:) sidesteps the block.
+const openImageFullSize = async (src: string) => {
+  try {
+    const blob = await (await fetch(pngDataUrl(src))).blob();
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch (e) {
+    console.error("open image failed", e);
+  }
+};
+
 const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
   const theme = useTheme();
   const isUser = msg.role === "user";
@@ -143,33 +157,24 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
           }}
         >
           {msg.images!.map((src) => (
-            <a
+            <img
               key={src}
-              href={pngDataUrl(src)}
-              target="_blank"
-              rel="noopener noreferrer"
+              src={pngDataUrl(src)}
+              alt=""
+              loading="lazy"
               title="open full size"
+              onClick={() => void openImageFullSize(src)}
               css={{
-                display: "inline-block",
-                lineHeight: 0,
+                maxWidth: 480,
+                maxHeight: 480,
+                width: "100%",
+                height: "auto",
+                borderRadius: theme.border.radius,
+                border: `1px solid ${theme.colors.border}`,
+                objectFit: "contain",
+                cursor: "zoom-in",
               }}
-            >
-              <img
-                src={pngDataUrl(src)}
-                alt=""
-                loading="lazy"
-                css={{
-                  maxWidth: 480,
-                  maxHeight: 480,
-                  width: "100%",
-                  height: "auto",
-                  borderRadius: theme.border.radius,
-                  border: `1px solid ${theme.colors.border}`,
-                  objectFit: "contain",
-                  cursor: "zoom-in",
-                }}
-              />
-            </a>
+            />
           ))}
         </div>
       )}
