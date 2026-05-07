@@ -62,6 +62,13 @@ export const api = {
     fetch(`/api/conversations/${id}/messages`, {
       credentials: "include",
     }).then(json<Message[]>),
+  deleteMessageFrom: (convId: string, msgId: number) =>
+    fetch(`/api/conversations/${convId}/messages/${msgId}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+    }),
   modelCaps: (model: string) =>
     fetch(`/api/models/caps?model=${encodeURIComponent(model)}`, {
       credentials: "include",

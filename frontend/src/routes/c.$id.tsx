@@ -25,7 +25,16 @@ const ChatView = () => {
   const stickRef = useRef(true);
   const prevScrollTopRef = useRef(0);
   const [showJump, setShowJump] = useState(false);
-  const { messages, streaming, error, loaded, send, stop } = useChat(id);
+  const {
+    messages,
+    streaming,
+    error,
+    loaded,
+    send,
+    stop,
+    deleteFrom,
+    regenerate,
+  } = useChat(id);
 
   const { data: conversations } = useSWR<Conversation[]>(
     "/api/conversations",
@@ -212,9 +221,13 @@ const ChatView = () => {
       >
         <div css={{ maxWidth: 760, margin: "0 auto" }}>
           {messages.map((m, i) => (
-            // append-only list; index is stable.
-            // eslint-disable-next-line @eslint-react/no-array-index-key
-            <MessageView key={i} msg={m} />
+            <MessageView
+              key={m.id ?? `optimistic-${i}`}
+              msg={m}
+              onDeleteFrom={deleteFrom}
+              onRegenerate={regenerate}
+              busy={streaming}
+            />
           ))}
           {error && (
             <div

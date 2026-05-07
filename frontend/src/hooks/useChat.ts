@@ -4,6 +4,7 @@ import { useSWRConfig } from "swr";
 import { api, Message, streamChat } from "../api";
 
 type LiveMessage = Pick<Message, "role" | "content"> & {
+  id?: number;
   images?: string[];
   status?: "done" | "pending" | "error";
 };
@@ -125,6 +126,51 @@ export function useChat(convId: string | undefined) {
     abortRef.current?.abort();
   }, []);
 
+  const deleteFrom = useCallback(
+    async (messageId: number) => {
+      if (!convId) return;
+      try {
+        await api.deleteMessageFrom(convId, messageId);
+        const rows = await api.getMessages(convId);
+        setMessages(rows);
+        await mutate("/api/conversations");
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [convId, mutate],
+  );
+
+  const regenerate = useCallback(
+    async (assistantId: number) => {
+      if (!convId || streaming) return;
+      const idx = messages.findIndex((m) => m.id === assistantId);
+      if (idx === -1) return;
+      let userIdx = -1;
+      for (let i = idx - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          userIdx = i;
+          break;
+        }
+      }
+      if (userIdx === -1) return;
+      const prior = messages[userIdx];
+      const target = messages[idx];
+      const inferredMode: "chat" | "image" =
+        target.images && target.images.length > 0 ? "image" : "chat";
+      try {
+        await api.deleteMessageFrom(convId, assistantId);
+        const rows = await api.getMessages(convId);
+        setMessages(rows);
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+      await send(prior.content, undefined, prior.images, inferredMode);
+    },
+    [convId, messages, send, streaming],
+  );
+
   // Poll while any message is still pending (e.g. an image generation
   // started in another tab or before a reload). Stops as soon as the
   // refreshed list has no pending rows.
@@ -148,5 +194,14 @@ export function useChat(convId: string | undefined) {
     };
   }, [convId, hasPending]);
 
-  return { messages, streaming, error, loaded, send, stop };
+  return {
+    messages,
+    streaming,
+    error,
+    loaded,
+    send,
+    stop,
+    deleteFrom,
+    regenerate,
+  };
 }

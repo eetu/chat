@@ -1,4 +1,5 @@
-import { useTheme } from "@emotion/react";
+import { Theme, useTheme } from "@emotion/react";
+import { useState } from "react";
 
 import { Message } from "../api";
 import Markdown from "./Markdown";
@@ -10,14 +11,31 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   status?: "done" | "pending" | "error";
 };
 
+type Props = {
+  msg: DisplayMessage;
+  onDeleteFrom?: (id: number) => void;
+  onRegenerate?: (id: number) => void;
+  busy?: boolean;
+};
+
 const imgSrc = (s: string) =>
   s.startsWith("data:") ? s : `data:image/*;base64,${s}`;
 
-const MessageView = ({ msg }: { msg: DisplayMessage }) => {
+// Generated images come back as PNG. Build the data URL with the
+// concrete MIME so opening the image in a new tab renders cleanly and
+// the clipboard accepts the resulting Blob — `image/*` wildcards leave
+// `blob.type` empty and macOS silently rejects the ClipboardItem.
+const pngDataUrl = (s: string) =>
+  s.startsWith("data:") ? s : `data:image/png;base64,${s}`;
+
+const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
   const theme = useTheme();
   const isUser = msg.role === "user";
 
   if (isUser) {
+    const userHasContent = !!msg.content;
+    const userHasImages = !!msg.images && msg.images.length > 0;
+    const userShowActions = userHasContent || userHasImages;
     return (
       <div
         css={{
@@ -26,9 +44,19 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
           alignItems: "flex-end",
           marginBottom: 18,
           gap: 6,
+          "& .message-actions": {
+            opacity: 0,
+            transition: "opacity 120ms ease",
+          },
+          "&:hover .message-actions, &:focus-within .message-actions": {
+            opacity: 1,
+          },
+          "@media (hover: none)": {
+            "& .message-actions": { opacity: 1 },
+          },
         }}
       >
-        {msg.images && msg.images.length > 0 && (
+        {userHasImages && (
           <div
             css={{
               display: "flex",
@@ -38,7 +66,7 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
               maxWidth: "78%",
             }}
           >
-            {msg.images.map((src) => (
+            {msg.images!.map((src) => (
               <img
                 key={src}
                 src={imgSrc(src)}
@@ -55,7 +83,7 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
             ))}
           </div>
         )}
-        {msg.content && (
+        {userHasContent && (
           <div
             css={{
               maxWidth: "78%",
@@ -71,6 +99,9 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
             {msg.content}
           </div>
         )}
+        {userShowActions && (
+          <MessageActions msg={msg} onDeleteFrom={onDeleteFrom} busy={busy} />
+        )}
       </div>
     );
   }
@@ -79,6 +110,8 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
   const hasContent = !!msg.content;
   const isPending = msg.status === "pending";
   const isError = msg.status === "error";
+
+  const showActions = !isPending && !isError && (hasContent || hasImages);
 
   return (
     <div
@@ -89,6 +122,16 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
         display: "flex",
         flexDirection: "column",
         gap: 8,
+        "& .message-actions": {
+          opacity: 0,
+          transition: "opacity 120ms ease",
+        },
+        "&:hover .message-actions, &:focus-within .message-actions": {
+          opacity: 1,
+        },
+        "@media (hover: none)": {
+          "& .message-actions": { opacity: 1 },
+        },
       }}
     >
       {hasImages && (
@@ -100,21 +143,33 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
           }}
         >
           {msg.images!.map((src) => (
-            <img
+            <a
               key={src}
-              src={imgSrc(src)}
-              alt=""
-              loading="lazy"
+              href={pngDataUrl(src)}
+              target="_blank"
+              rel="noopener noreferrer"
+              title="open full size"
               css={{
-                maxWidth: 480,
-                maxHeight: 480,
-                width: "100%",
-                height: "auto",
-                borderRadius: theme.border.radius,
-                border: `1px solid ${theme.colors.border}`,
-                objectFit: "contain",
+                display: "inline-block",
+                lineHeight: 0,
               }}
-            />
+            >
+              <img
+                src={pngDataUrl(src)}
+                alt=""
+                loading="lazy"
+                css={{
+                  maxWidth: 480,
+                  maxHeight: 480,
+                  width: "100%",
+                  height: "auto",
+                  borderRadius: theme.border.radius,
+                  border: `1px solid ${theme.colors.border}`,
+                  objectFit: "contain",
+                  cursor: "zoom-in",
+                }}
+              />
+            </a>
           ))}
         </div>
       )}
@@ -158,9 +213,145 @@ const MessageView = ({ msg }: { msg: DisplayMessage }) => {
       {!hasContent && !hasImages && !isPending && !isError && (
         <TypingIndicator />
       )}
+      {showActions && (
+        <MessageActions
+          msg={msg}
+          onDeleteFrom={onDeleteFrom}
+          onRegenerate={onRegenerate}
+          busy={busy}
+        />
+      )}
     </div>
   );
 };
+
+const MessageActions = ({
+  msg,
+  onDeleteFrom,
+  onRegenerate,
+  busy,
+}: {
+  msg: DisplayMessage;
+  onDeleteFrom?: (id: number) => void;
+  onRegenerate?: (id: number) => void;
+  busy?: boolean;
+}) => {
+  const theme = useTheme();
+  const [flash, setFlash] = useState(false);
+  const isAssistant = msg.role === "assistant";
+  // Image-side actions only apply to assistant messages — user uploads
+  // came from the user's own device, no point copying or re-downloading.
+  const firstImage = isAssistant ? msg.images?.[0] : undefined;
+  const canMutate = typeof msg.id === "number" && !busy;
+
+  const copy = async () => {
+    try {
+      if (firstImage) {
+        const raw = await (await fetch(pngDataUrl(firstImage))).blob();
+        const blob = new Blob([raw], { type: "image/png" });
+        await navigator.clipboard.write([
+          new ClipboardItem({ "image/png": blob }),
+        ]);
+      } else if (msg.content) {
+        await navigator.clipboard.writeText(msg.content);
+      } else {
+        return;
+      }
+      setFlash(true);
+      window.setTimeout(() => setFlash(false), 1200);
+    } catch (e) {
+      console.error("copy failed", e);
+    }
+  };
+
+  const downloadImage = () => {
+    if (!firstImage) return;
+    const a = document.createElement("a");
+    a.href = pngDataUrl(firstImage);
+    a.download = `chat-image-${Date.now()}.png`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
+
+  return (
+    <div
+      className="message-actions"
+      css={{
+        display: "flex",
+        gap: 4,
+        marginTop: 2,
+      }}
+    >
+      <ActionButton
+        onClick={copy}
+        label={flash ? "copied" : firstImage ? "copy image" : "copy text"}
+        icon={flash ? "check" : "content_copy"}
+        theme={theme}
+      />
+      {firstImage && (
+        <ActionButton
+          onClick={downloadImage}
+          label="download image"
+          icon="download"
+          theme={theme}
+        />
+      )}
+      {onRegenerate && canMutate && msg.role === "assistant" && (
+        <ActionButton
+          onClick={() => onRegenerate(msg.id!)}
+          label="regenerate"
+          icon="refresh"
+          theme={theme}
+        />
+      )}
+      {onDeleteFrom && canMutate && (
+        <ActionButton
+          onClick={() => onDeleteFrom(msg.id!)}
+          label="delete from here"
+          icon="delete_outline"
+          theme={theme}
+        />
+      )}
+    </div>
+  );
+};
+
+type ActionButtonProps = {
+  onClick: () => void | Promise<void>;
+  label: string;
+  icon: string;
+  theme: Theme;
+};
+
+const ActionButton = ({ onClick, label, icon, theme }: ActionButtonProps) => (
+  <button
+    type="button"
+    aria-label={label}
+    title={label}
+    onClick={() => void onClick()}
+    css={{
+      width: 28,
+      height: 28,
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      border: "none",
+      borderRadius: 6,
+      background: "transparent",
+      color: theme.colors.text.muted,
+      cursor: "pointer",
+      "&:hover": {
+        background: theme.colors.background.light,
+        color: theme.colors.text.main,
+      },
+    }}
+  >
+    <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+      {icon}
+    </span>
+  </button>
+);
 
 const ImageGenPlaceholder = () => {
   const theme = useTheme();

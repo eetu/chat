@@ -128,6 +128,21 @@ pub async fn get_messages(
     }
 }
 
+pub async fn delete_message_from(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    path: web::Path<(String, i64)>,
+) -> HttpResponse {
+    let (conv_id, msg_id) = path.into_inner();
+    match state
+        .storage
+        .delete_message_and_after(&user.sub, &conv_id, msg_id)
+    {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => storage_err(e),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatBody {
     pub conv_id: String,

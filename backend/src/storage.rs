@@ -323,6 +323,39 @@ impl Storage {
         Ok(())
     }
 
+    /// Delete the named message and every message after it in the same
+    /// conversation. Used by the "delete from here" + "regenerate" UI
+    /// affordances. Errors if the row doesn't belong to the user's chat.
+    pub fn delete_message_and_after(
+        &self,
+        user_sub: &str,
+        conv_id: &str,
+        message_id: i64,
+    ) -> Result<(), StorageError> {
+        self.get_conversation(user_sub, conv_id)?;
+        let conn = self.inner.lock().unwrap();
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![message_id, conv_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        conn.execute(
+            "DELETE FROM messages WHERE conv_id = ?1 AND id >= ?2",
+            params![conv_id, message_id],
+        )?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+        Ok(())
+    }
+
     /// Mark `pending` rows older than `older_than_secs` as `error`. Run once
     /// at startup so messages stuck across a backend crash don't keep the UI
     /// in a forever-loading state.
