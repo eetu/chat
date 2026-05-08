@@ -158,40 +158,45 @@ const ChatView = () => {
     scrollToBottom("auto");
   }, [id]);
 
-  // Drain a pending draft handed off from the landing page. Parse during
-  // render (guarded by a ref so it runs once per conversation) and dispatch
-  // the actual send from an effect once history has loaded — sending earlier
-  // would race the empty getMessages response that overwrites optimistic
-  // state.
+  // Drain a pending draft handed off from the landing page. Runs once per
+  // conversation (consumedRef guard) after history has loaded — sending
+  // earlier would race the empty getMessages response that overwrites
+  // optimistic state.
   const consumedRef = useRef<string | null>(null);
-  type Pending = {
-    content: string;
-    images?: string[];
-    model?: string | null;
-    mode?: "chat" | "image";
-  };
-  const pendingRef = useRef<Pending | null>(null);
-  if (loaded && messages.length === 0 && consumedRef.current !== id) {
-    consumedRef.current = id;
-    try {
-      const raw = window.sessionStorage.getItem(`chat:pending:${id}`);
-      if (raw) {
-        window.sessionStorage.removeItem(`chat:pending:${id}`);
-        const parsed = JSON.parse(raw) as Pending;
-        if (parsed.model) setModel(parsed.model);
-        pendingRef.current = parsed;
-      }
-    } catch {
-      // ignore storage / parse errors
-    }
-  }
   useEffect(() => {
-    const p = pendingRef.current;
-    if (!p) return;
-    pendingRef.current = null;
+    if (!id || !loaded) return;
+    if (consumedRef.current === id) return;
+    consumedRef.current = id;
+
+    type Pending = {
+      content: string;
+      images?: string[];
+      model?: string | null;
+      mode?: "chat" | "image";
+    };
+    const parsed = ((): Pending | null => {
+      try {
+        const raw = window.sessionStorage.getItem(`chat:pending:${id}`);
+        if (!raw) return null;
+        window.sessionStorage.removeItem(`chat:pending:${id}`);
+        return JSON.parse(raw) as Pending;
+      } catch {
+        return null;
+      }
+    })();
+    if (!parsed) return;
+
+    // No setModel here — conv.model (already passed at create time) syncs
+    // into the picker via the modelKey block above. Setting it here too
+    // would duplicate the update and trip eslint's set-state-in-effect rule.
     stickRef.current = true;
-    void send(p.content, p.model ?? model ?? undefined, p.images, p.mode);
-  }, [id, loaded, model, send]);
+    void send(
+      parsed.content,
+      parsed.model ?? undefined,
+      parsed.images,
+      parsed.mode,
+    );
+  }, [id, loaded, send]);
 
   // On message updates: only follow if the user is already pinned to the
   // bottom. Otherwise leave their scroll position alone.
