@@ -26,6 +26,13 @@ export type ModelCapabilities = {
 
 export type Me = { sub: string; username: string };
 
+export type Status = {
+  upstream: boolean;
+  model_locked: boolean;
+  auth: "dev" | "oidc" | "none";
+  refiner_available: boolean;
+};
+
 const json = async <T>(res: Response): Promise<T> => {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -36,6 +43,7 @@ const json = async <T>(res: Response): Promise<T> => {
 
 export const api = {
   me: () => fetch("/api/me", { credentials: "include" }).then(json<Me>),
+  status: () => fetch("/status").then(json<Status>),
   models: () =>
     fetch("/api/models", { credentials: "include" }).then(
       json<{ models?: Array<{ name: string; locked?: boolean }> }>,
@@ -91,6 +99,7 @@ export async function* streamChat(
     model?: string;
     images?: string[];
     mode?: "chat" | "image";
+    refine?: boolean;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {

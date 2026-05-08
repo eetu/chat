@@ -16,6 +16,7 @@ pub struct StatusResponse {
     pub upstream: bool,
     pub model_locked: bool,
     pub auth: &'static str,
+    pub refiner_available: bool,
 }
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -31,6 +32,7 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         upstream,
         model_locked: state.settings.ollama_model_lock.is_some(),
         auth,
+        refiner_available: state.settings.prompt_refiner_model.is_some(),
     })
 }
 
@@ -157,6 +159,12 @@ pub struct ChatBody {
     /// to Ollama's image generation endpoint instead of the chat stream.
     #[serde(default)]
     pub mode: Option<String>,
+    /// For image mode only. When true (default) the configured refiner
+    /// model rewrites the user's prompt before generation. When false,
+    /// the user's prompt is sent verbatim and the refiner instead
+    /// describes the generated image so subsequent turns have context.
+    #[serde(default)]
+    pub refine: Option<bool>,
 }
 
 pub async fn chat(
@@ -236,29 +244,72 @@ pub async fn chat(
         let model_for_gen = model.clone();
         let refiner_model = state.settings.prompt_refiner_model.clone();
         let refiner_history = messages.clone();
+        // Default refine on; only honour the client toggle when a refiner is
+        // actually configured server-side.
+        let refine_enabled = refiner_model.is_some() && body.refine.unwrap_or(true);
         tokio::spawn(async move {
-            let refined = match refiner_model.as_deref() {
-                Some(m) => match ollama::refine_image_prompt(
-                    state_clone.clone(),
-                    m,
-                    &refiner_history,
-                )
-                .await
-                {
-                    Ok(r) if !r.is_empty() => Some(r),
-                    Ok(_) => None,
-                    Err(e) => {
-                        tracing::warn!("prompt refinement failed: {e} (using original)");
-                        None
-                    }
-                },
-                None => None,
+            let refined = if refine_enabled {
+                match refiner_model.as_deref() {
+                    Some(m) => match ollama::refine_image_prompt(
+                        state_clone.clone(),
+                        m,
+                        &refiner_history,
+                    )
+                    .await
+                    {
+                        Ok(r) if !r.is_empty() => Some(r),
+                        Ok(_) => None,
+                        Err(e) => {
+                            tracing::warn!("prompt refinement failed: {e} (using original)");
+                            None
+                        }
+                    },
+                    None => None,
+                }
+            } else {
+                None
             };
-            let final_prompt = refined.as_deref().unwrap_or(prompt.as_str());
+
+            // When refinement is off, fall back to feeding the latest prior
+            // assistant caption as context so follow-ups have something to
+            // build on. Caption text comes from earlier describe_image runs
+            // (or earlier refined prompts).
+            let context_prefix = if refine_enabled {
+                None
+            } else {
+                refiner_history
+                    .iter()
+                    .rev()
+                    .find(|m| m.role == "assistant" && !m.content.is_empty())
+                    .map(|m| m.content.clone())
+            };
+            let composed_prompt = match (&refined, &context_prefix) {
+                (Some(r), _) => r.clone(),
+                (None, Some(ctx)) => format!(
+                    "Context from the previous image: {ctx}\n\nNew request: {prompt}"
+                ),
+                (None, None) => prompt.clone(),
+            };
+            let final_prompt = composed_prompt.as_str();
 
             match ollama::generate_image(&state_clone, &model_for_gen, final_prompt).await {
                 Ok(b64) => {
-                    let caption = refined.unwrap_or_default();
+                    // Caption either holds the refined prompt (refine on) or
+                    // a vision description of what was rendered (refine off
+                    // + refiner available) so the next turn has context.
+                    let caption = if let Some(r) = refined {
+                        r
+                    } else if let Some(m) = refiner_model.as_deref() {
+                        match ollama::describe_image(state_clone.clone(), m, &b64).await {
+                            Ok(d) => d,
+                            Err(e) => {
+                                tracing::warn!("image description failed: {e}");
+                                String::new()
+                            }
+                        }
+                    } else {
+                        String::new()
+                    };
                     if let Err(e) = state_clone.storage.complete_message(
                         pending_id,
                         &caption,

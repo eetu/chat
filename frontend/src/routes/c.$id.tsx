@@ -4,7 +4,7 @@ import { createFileRoute, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, Conversation, ModelCapabilities } from "../api";
+import { api, Conversation, ModelCapabilities, Status } from "../api";
 import Composer from "../components/Composer";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
@@ -105,16 +105,19 @@ const ChatView = () => {
     () => api.modelCaps(model as string),
   );
 
+  const { data: status } = useSWR<Status>("/status", api.status);
+
   const sendWithModel = (
     content: string,
     images?: string[],
     mode?: "chat" | "image",
+    refine?: boolean,
   ) => {
     // The user just hit send — they expect to see their message and the
     // incoming reply. Re-glue to the bottom regardless of where they were.
     stickRef.current = true;
     setShowJump(false);
-    void send(content, model ?? undefined, images, mode);
+    void send(content, model ?? undefined, images, mode, refine);
   };
 
   const onScroll = () => {
@@ -173,6 +176,7 @@ const ChatView = () => {
       images?: string[];
       model?: string | null;
       mode?: "chat" | "image";
+      refine?: boolean;
     };
     const parsed = ((): Pending | null => {
       try {
@@ -195,6 +199,7 @@ const ChatView = () => {
       parsed.model ?? undefined,
       parsed.images,
       parsed.mode,
+      parsed.refine,
     );
   }, [id, loaded, send]);
 
@@ -297,6 +302,7 @@ const ChatView = () => {
           vision={caps?.vision ?? false}
           chatCap={caps?.chat ?? true}
           imageGen={caps?.image_gen ?? false}
+          refinerAvailable={status?.refiner_available ?? false}
         />
       </div>
     </>

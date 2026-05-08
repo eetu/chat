@@ -202,16 +202,7 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
             {msg.content}
           </div>
         ) : hasImages ? (
-          <div
-            css={{
-              ...theme.typography.caption,
-              color: theme.colors.text.muted,
-              fontStyle: "italic",
-              maxWidth: 480,
-            }}
-          >
-            {msg.content}
-          </div>
+          <CollapsibleCaption text={msg.content} />
         ) : (
           <Markdown>{msg.content}</Markdown>
         ))}
@@ -357,6 +348,48 @@ const ActionButton = ({ onClick, label, icon, theme }: ActionButtonProps) => (
     </span>
   </button>
 );
+
+const CollapsibleCaption = ({ text }: { text: string }) => {
+  const theme = useTheme();
+  const [open, setOpen] = useState(false);
+  return (
+    <details
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+      css={{
+        maxWidth: 480,
+        ...theme.typography.caption,
+        color: theme.colors.text.muted,
+      }}
+    >
+      <summary
+        css={{
+          cursor: "pointer",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          color: theme.colors.text.muted,
+          listStyle: "none",
+          "&::-webkit-details-marker": { display: "none" },
+          "&:hover": { color: theme.colors.text.main },
+        }}
+      >
+        <span
+          className="material-icons-outlined"
+          css={{
+            fontSize: 16,
+            transition: "transform 120ms ease",
+            transform: open ? "rotate(90deg)" : "rotate(0deg)",
+          }}
+        >
+          chevron_right
+        </span>
+        {open ? "hide prompt" : "show prompt"}
+      </summary>
+      <div css={{ marginTop: 4, fontStyle: "italic" }}>{text}</div>
+    </details>
+  );
+};
 
 const ImageGenPlaceholder = () => {
   const theme = useTheme();

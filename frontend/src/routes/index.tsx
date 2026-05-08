@@ -4,7 +4,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 
-import { api, ModelCapabilities } from "../api";
+import { api, ModelCapabilities, Status } from "../api";
 import Composer from "../components/Composer";
 import Wordmark from "../components/Wordmark";
 import { mq } from "../mq";
@@ -44,6 +44,8 @@ const Landing = () => {
     () => api.modelCaps(model as string),
   );
 
+  const { data: status } = useSWR<Status>("/status", api.status);
+
   const onModelChange = (next: string) => {
     setModel(next);
     try {
@@ -57,12 +59,13 @@ const Landing = () => {
     content: string,
     images?: string[],
     mode?: "chat" | "image",
+    refine?: boolean,
   ) => {
     const conv = await api.createConversation({ model: model ?? undefined });
     try {
       window.sessionStorage.setItem(
         `chat:pending:${conv.id}`,
-        JSON.stringify({ content, images, model, mode }),
+        JSON.stringify({ content, images, model, mode, refine }),
       );
     } catch {
       // ignore
@@ -103,6 +106,7 @@ const Landing = () => {
           vision={caps?.vision ?? false}
           chatCap={caps?.chat ?? true}
           imageGen={caps?.image_gen ?? false}
+          refinerAvailable={status?.refiner_available ?? false}
         />
       </div>
     </div>

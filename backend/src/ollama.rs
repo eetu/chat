@@ -209,6 +209,49 @@ pub async fn summarize_title(
     Ok(sanitize_title(&parsed.message.content))
 }
 
+/// Ask a vision-capable chat model to describe a generated image. The
+/// description is used as context for follow-up image-gen turns when the
+/// user has the prompt-refiner toggle off.
+pub async fn describe_image(
+    state: Arc<AppState>,
+    model: &str,
+    image_b64: &str,
+) -> Result<String, reqwest::Error> {
+    let messages = vec![
+        ChatMessage {
+            role: "system".into(),
+            content: "Describe the supplied image in one paragraph as if it \
+                were a detailed image-generation prompt. Cover subject, \
+                composition, framing, lighting, materials, mood, and any \
+                distinctive style. Plain text. No preamble, no quotes, no \
+                markdown, no commentary."
+                .into(),
+            images: None,
+        },
+        ChatMessage {
+            role: "user".into(),
+            content: "describe this image".into(),
+            images: Some(vec![image_b64.to_string()]),
+        },
+    ];
+
+    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "messages": messages,
+        "stream": false,
+    });
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let parsed: OllamaChatResponse = res.json().await?;
+    Ok(parsed.message.content.trim().to_string())
+}
+
 /// Expand a user's image-gen prompt into a detailed prompt, using the
 /// conversation history so follow-ups ("make it night", "same scene in
 /// winter") build on prior turns. Best-effort: callers fall back to the

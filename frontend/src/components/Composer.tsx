@@ -13,7 +13,12 @@ import ModelPicker from "./ModelPicker";
 type Mode = "chat" | "image";
 
 type Props = {
-  onSend: (content: string, images?: string[], mode?: Mode) => void;
+  onSend: (
+    content: string,
+    images?: string[],
+    mode?: Mode,
+    refine?: boolean,
+  ) => void;
   /** When true, the send button switches to a stop button. */
   streaming?: boolean;
   /** Called when the user clicks the stop button mid-stream. */
@@ -35,6 +40,8 @@ type Props = {
   chatCap?: boolean;
   /** Whether the model supports image generation output. */
   imageGen?: boolean;
+  /** Whether the server has a prompt refiner model configured. */
+  refinerAvailable?: boolean;
 };
 
 /**
@@ -43,6 +50,8 @@ type Props = {
  * "royale with chat") — flat surface, soft border, 16px radius, accent send
  * button. No bottom hint line; the rounded shell carries the whole input.
  */
+const REFINE_KEY = "chat:refineImagePrompt";
+
 const Composer = ({
   onSend,
   streaming,
@@ -53,6 +62,7 @@ const Composer = ({
   vision,
   chatCap = true,
   imageGen = false,
+  refinerAvailable = false,
 }: Props) => {
   const theme = useTheme();
   const [value, setValue] = useState("");
@@ -80,6 +90,26 @@ const Composer = ({
     setMode(imageGen && !chatCap ? "image" : "chat");
   }
   const showModeToggle = chatCap && imageGen;
+  const [refine, setRefine] = useState<boolean>(() => {
+    try {
+      const v = window.localStorage.getItem(REFINE_KEY);
+      return v == null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  });
+  const showRefineToggle = mode === "image" && refinerAvailable;
+  const toggleRefine = () => {
+    setRefine((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(REFINE_KEY, next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
   // Counter ref so nested children's dragenter/leave events don't flicker
   // the highlight; the overlay only goes away once drag has fully left
   // the shell.
@@ -110,7 +140,7 @@ const Composer = ({
     if ((!trimmed && attached.length === 0) || streaming) return;
     const imgs =
       attached.length > 0 ? attached.map((a) => a.base64) : undefined;
-    onSend(trimmed, imgs, mode);
+    onSend(trimmed, imgs, mode, mode === "image" ? refine : undefined);
     setValue("");
     setAttached([]);
     if (recallIndex !== -1) setRecallIndex(-1);
@@ -416,6 +446,32 @@ const Composer = ({
                   css={{ fontSize: 22 }}
                 >
                   {mode === "chat" ? "image" : "chat_bubble_outline"}
+                </span>
+              </button>
+            )}
+            {showRefineToggle && (
+              <button
+                type="button"
+                aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
+                title={
+                  refine
+                    ? "prompt refiner is on — model expands the prompt before generation"
+                    : "prompt refiner is off — model describes the result for next-turn context"
+                }
+                aria-pressed={refine}
+                onClick={toggleRefine}
+                css={{
+                  ...composerSubButtonCss(theme),
+                  color: refine
+                    ? theme.colors.activity.on
+                    : theme.colors.text.muted,
+                }}
+              >
+                <span
+                  className="material-icons-outlined"
+                  css={{ fontSize: 22 }}
+                >
+                  auto_fix_high
                 </span>
               </button>
             )}
