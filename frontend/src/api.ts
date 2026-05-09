@@ -11,9 +11,14 @@ export type Message = {
   role: "user" | "assistant" | "system";
   content: string;
   created_at: number;
-  images?: string[];
+  /** Count of image attachments. Bytes are fetched on demand via
+   * `imageUrl(convId, id, idx)` rather than inlined in the list payload. */
+  image_count?: number;
   status?: "done" | "pending" | "error";
 };
+
+export const imageUrl = (convId: string, msgId: number, idx: number) =>
+  `/api/conversations/${convId}/messages/${msgId}/image/${idx}`;
 
 export type ModelCapabilities = {
   vision: boolean;

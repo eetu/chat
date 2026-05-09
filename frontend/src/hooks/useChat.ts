@@ -5,7 +5,11 @@ import { api, Message, streamChat } from "../api";
 
 type LiveMessage = Pick<Message, "role" | "content"> & {
   id?: number;
+  /** Optimistic-state base64 (no `data:` prefix) — only present before
+   * the server round-trip; afterwards `image_count` carries the metadata
+   * and the actual bytes are loaded via `imageUrl(...)`. */
   images?: string[];
+  image_count?: number;
   status?: "done" | "pending" | "error";
 };
 
@@ -157,8 +161,10 @@ export function useChat(convId: string | undefined) {
       if (userIdx === -1) return;
       const prior = messages[userIdx];
       const target = messages[idx];
+      const targetImageCount =
+        (target.image_count ?? 0) + (target.images?.length ?? 0);
       const inferredMode: "chat" | "image" =
-        target.images && target.images.length > 0 ? "image" : "chat";
+        targetImageCount > 0 ? "image" : "chat";
       try {
         await api.deleteMessageFrom(convId, assistantId);
         const rows = await api.getMessages(convId);

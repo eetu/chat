@@ -234,6 +234,7 @@ const ChatView = () => {
             <MessageView
               key={m.id ?? `optimistic-${i}`}
               msg={m}
+              convId={id}
               onDeleteFrom={deleteFrom}
               onRegenerate={regenerate}
               busy={streaming}

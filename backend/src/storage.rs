@@ -18,6 +18,8 @@ pub enum StorageError {
     NotFound,
     #[error("forbidden")]
     Forbidden,
+    #[error("invalid input: {0}")]
+    Invalid(String),
 }
 
 #[derive(Clone)]
@@ -34,15 +36,15 @@ pub struct Conversation {
     pub updated_at: i64,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub id: i64,
     pub role: String,
     pub content: String,
     pub created_at: i64,
-    /// Base64 image attachments. Empty for non-image messages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<String>,
+    /// Number of attachments in `message_images`. Bytes are loaded on
+    /// demand so the chat list endpoint stays cheap.
+    pub image_count: usize,
     /// Lifecycle of the message. `done` for fully-persisted messages,
     /// `pending` for assistant rows awaiting generation, `error` for
     /// failed generations (with the error text in `content`).
@@ -80,6 +82,16 @@ impl Storage {
                 attachments TEXT
             );
             CREATE INDEX IF NOT EXISTS msg_conv ON messages(conv_id, id);
+            CREATE TABLE IF NOT EXISTS message_images (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                idx INTEGER NOT NULL,
+                mime TEXT NOT NULL DEFAULT 'image/png',
+                bytes BLOB NOT NULL,
+                UNIQUE(message_id, idx)
+            );
+            CREATE INDEX IF NOT EXISTS msg_images_message
+                ON message_images(message_id);
             "#,
         )?;
         // Idempotent migration for pre-attachments databases. SQLite's
@@ -98,6 +110,7 @@ impl Storage {
                 tracing::debug!("status column migration noop: {e}");
             }
         }
+        migrate_attachments_to_blobs(&conn)?;
         Ok(Self { inner: Arc::new(Mutex::new(conn)) })
     }
 
@@ -216,22 +229,21 @@ impl Storage {
         self.get_conversation(user_sub, conv_id)?;
         let conn = self.inner.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, role, content, created_at, attachments, status FROM messages
-             WHERE conv_id = ?1 ORDER BY id ASC",
+            "SELECT m.id, m.role, m.content, m.created_at, m.status,
+                    (SELECT COUNT(*) FROM message_images mi WHERE mi.message_id = m.id)
+                        AS image_count
+             FROM messages m
+             WHERE m.conv_id = ?1
+             ORDER BY m.id ASC",
         )?;
         let rows = stmt.query_map([conv_id], |row| {
-            let attachments: Option<String> = row.get(4)?;
-            let images = attachments
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-                .unwrap_or_default();
             Ok(Message {
                 id: row.get(0)?,
                 role: row.get(1)?,
                 content: row.get(2)?,
                 created_at: row.get(3)?,
-                images,
-                status: row.get(5)?,
+                status: row.get(4)?,
+                image_count: row.get::<_, i64>(5)? as usize,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
@@ -247,18 +259,16 @@ impl Storage {
     ) -> Result<i64, StorageError> {
         self.get_conversation(user_sub, conv_id)?;
         let now = Utc::now().timestamp();
-        let attachments_json = if images.is_empty() {
-            None
-        } else {
-            serde_json::to_string(images).ok()
-        };
         let conn = self.inner.lock().unwrap();
         conn.execute(
-            "INSERT INTO messages(conv_id, role, content, created_at, attachments)
-             VALUES(?1, ?2, ?3, ?4, ?5)",
-            params![conv_id, role, content, now, attachments_json],
+            "INSERT INTO messages(conv_id, role, content, created_at)
+             VALUES(?1, ?2, ?3, ?4)",
+            params![conv_id, role, content, now],
         )?;
         let id = conn.last_insert_rowid();
+        if !images.is_empty() {
+            insert_message_images(&conn, id, images)?;
+        }
         conn.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
             params![now, conv_id],
@@ -296,17 +306,19 @@ impl Storage {
         content: &str,
         images: &[String],
     ) -> Result<(), StorageError> {
-        let attachments_json = if images.is_empty() {
-            None
-        } else {
-            serde_json::to_string(images).ok()
-        };
         let conn = self.inner.lock().unwrap();
         conn.execute(
-            "UPDATE messages SET content = ?1, attachments = ?2, status = 'done'
-             WHERE id = ?3",
-            params![content, attachments_json, message_id],
+            "UPDATE messages SET content = ?1, status = 'done' WHERE id = ?2",
+            params![content, message_id],
         )?;
+        // Defensive: a re-completed message shouldn't keep stale images.
+        conn.execute(
+            "DELETE FROM message_images WHERE message_id = ?1",
+            params![message_id],
+        )?;
+        if !images.is_empty() {
+            insert_message_images(&conn, message_id, images)?;
+        }
         Ok(())
     }
 
@@ -321,6 +333,63 @@ impl Storage {
             params![error_text, message_id],
         )?;
         Ok(())
+    }
+
+    /// Fetch the raw bytes + MIME of a single image attachment. Used by
+    /// the per-image HTTP endpoint so the chat list response no longer
+    /// needs to inline full image data.
+    pub fn get_message_image_bytes(
+        &self,
+        user_sub: &str,
+        conv_id: &str,
+        msg_id: i64,
+        idx: usize,
+    ) -> Result<(Vec<u8>, String), StorageError> {
+        self.get_conversation(user_sub, conv_id)?;
+        let conn = self.inner.lock().unwrap();
+        // Verify the message belongs to the conversation before reading
+        // bytes — message_images joins on message_id only.
+        let owned: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![msg_id, conv_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owned.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let row: Option<(Vec<u8>, String)> = conn
+            .query_row(
+                "SELECT bytes, mime FROM message_images
+                 WHERE message_id = ?1 AND idx = ?2",
+                params![msg_id, idx as i64],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.ok_or(StorageError::NotFound)
+    }
+
+    /// Base64-encoded variant for the chat history rebuild path that
+    /// forwards user-side images to Ollama as part of `messages[].images`.
+    pub fn get_message_images_b64(
+        &self,
+        msg_id: i64,
+    ) -> Result<Vec<String>, StorageError> {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine;
+        let conn = self.inner.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT bytes FROM message_images
+             WHERE message_id = ?1 ORDER BY idx ASC",
+        )?;
+        let rows = stmt.query_map(params![msg_id], |r| r.get::<_, Vec<u8>>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            let bytes = r?;
+            out.push(B64.encode(bytes));
+        }
+        Ok(out)
     }
 
     /// Delete the named message and every message after it in the same
@@ -420,6 +489,102 @@ impl Storage {
         )?;
         Ok(n)
     }
+}
+
+/// Decode a slice of raw base64 image strings (no `data:` prefix) and
+/// insert them into `message_images` keyed by index. Returns Invalid
+/// when any input fails to decode.
+fn insert_message_images(
+    conn: &Connection,
+    message_id: i64,
+    b64_images: &[String],
+) -> Result<(), StorageError> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    let mut stmt = conn.prepare(
+        "INSERT INTO message_images(message_id, idx, mime, bytes)
+         VALUES(?1, ?2, 'image/png', ?3)",
+    )?;
+    for (idx, s) in b64_images.iter().enumerate() {
+        let bytes = B64
+            .decode(s.as_bytes())
+            .map_err(|e| StorageError::Invalid(format!("base64 decode: {e}")))?;
+        stmt.execute(params![message_id, idx as i64, bytes])?;
+    }
+    Ok(())
+}
+
+/// One-shot migration that moves any base64 image attachments from the
+/// legacy `messages.attachments` JSON column into the BLOB-backed
+/// `message_images` table. Idempotent — skips messages that already
+/// have rows in `message_images`. Clears the JSON only after the
+/// corresponding BLOBs are inserted to avoid data loss on partial runs.
+fn migrate_attachments_to_blobs(conn: &Connection) -> Result<(), StorageError> {
+    let pending: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages
+         WHERE attachments IS NOT NULL AND attachments != ''
+           AND id NOT IN (SELECT DISTINCT message_id FROM message_images)",
+        [],
+        |r| r.get(0),
+    )?;
+    if pending == 0 {
+        // Belt-and-braces: clear stragglers whose images were already
+        // copied across in a previous run but the column wasn't nulled.
+        conn.execute(
+            "UPDATE messages SET attachments = NULL
+             WHERE attachments IS NOT NULL
+               AND id IN (SELECT DISTINCT message_id FROM message_images)",
+            [],
+        )?;
+        return Ok(());
+    }
+
+    tracing::info!(
+        "migrating {pending} message(s) from attachments JSON into message_images BLOBs"
+    );
+
+    let rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, attachments FROM messages
+             WHERE attachments IS NOT NULL AND attachments != ''
+               AND id NOT IN (SELECT DISTINCT message_id FROM message_images)",
+        )?;
+        let iter = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        iter.collect::<Result<_, _>>()?
+    };
+
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    for (msg_id, json) in rows {
+        let images: Vec<String> = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("skipping malformed attachments for msg {msg_id}: {e}");
+                continue;
+            }
+        };
+        for (idx, b64s) in images.into_iter().enumerate() {
+            let bytes = match B64.decode(b64s.as_bytes()) {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!("skipping bad base64 in msg {msg_id} idx {idx}: {e}");
+                    continue;
+                }
+            };
+            conn.execute(
+                "INSERT OR IGNORE INTO message_images(message_id, idx, mime, bytes)
+                 VALUES(?1, ?2, 'image/png', ?3)",
+                params![msg_id, idx as i64, bytes],
+            )?;
+        }
+    }
+    conn.execute(
+        "UPDATE messages SET attachments = NULL
+         WHERE attachments IS NOT NULL
+           AND id IN (SELECT DISTINCT message_id FROM message_images)",
+        [],
+    )?;
+    Ok(())
 }
 
 pub fn start_ttl_loop(state: Arc<AppState>) {

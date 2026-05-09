@@ -1,39 +1,63 @@
 import { Theme, useTheme } from "@emotion/react";
 import { useState } from "react";
 
-import { Message } from "../api";
+import { imageUrl, Message } from "../api";
 import Markdown from "./Markdown";
 import TypingIndicator from "./TypingIndicator";
 
 type DisplayMessage = Pick<Message, "role" | "content"> & {
   id?: number;
+  /** Optimistic-state base64 for messages not yet persisted. */
   images?: string[];
+  /** Number of persisted attachments — load via `imageUrl(...)`. */
+  image_count?: number;
   status?: "done" | "pending" | "error";
 };
 
 type Props = {
   msg: DisplayMessage;
+  convId?: string;
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
   busy?: boolean;
 };
 
-const imgSrc = (s: string) =>
-  s.startsWith("data:") ? s : `data:image/*;base64,${s}`;
-
-// Generated images come back as PNG. Build the data URL with the
-// concrete MIME so opening the image in a new tab renders cleanly and
-// the clipboard accepts the resulting Blob — `image/*` wildcards leave
-// `blob.type` empty and macOS silently rejects the ClipboardItem.
+// Optimistic data URL for pre-persistence base64. Concrete MIME so
+// macOS clipboard accepts the Blob — `image/*` wildcards leave
+// `blob.type` empty and the ClipboardItem silently fails.
 const pngDataUrl = (s: string) =>
   s.startsWith("data:") ? s : `data:image/png;base64,${s}`;
 
-// Chrome blocks top-level `data:` navigation, so opening the image in
-// a new tab via `<a target="_blank">` lands on a blank page. Converting
-// to an object URL (same-origin blob:) sidesteps the block.
-const openImageFullSize = async (src: string) => {
+type ImageRef = { src: string; isUrl: boolean };
+
+const collectImageRefs = (msg: DisplayMessage, convId?: string): ImageRef[] => {
+  if (msg.images && msg.images.length > 0) {
+    return msg.images.map((s) => ({ src: pngDataUrl(s), isUrl: false }));
+  }
+  if (
+    convId &&
+    typeof msg.id === "number" &&
+    msg.image_count &&
+    msg.image_count > 0
+  ) {
+    return Array.from({ length: msg.image_count }, (_, idx) => ({
+      src: imageUrl(convId, msg.id!, idx),
+      isUrl: true,
+    }));
+  }
+  return [];
+};
+
+// Chrome blocks top-level `data:` navigation, so opening a persisted
+// image just delegates to a same-origin URL. Optimistic (pre-persist)
+// images route through a blob URL.
+const openImageFullSize = async (ref: ImageRef) => {
+  if (ref.isUrl) {
+    window.open(ref.src, "_blank", "noopener,noreferrer");
+    return;
+  }
   try {
-    const blob = await (await fetch(pngDataUrl(src))).blob();
+    const blob = await (await fetch(ref.src)).blob();
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank", "noopener,noreferrer");
     window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
@@ -42,13 +66,20 @@ const openImageFullSize = async (src: string) => {
   }
 };
 
-const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
+const MessageView = ({
+  msg,
+  convId,
+  onDeleteFrom,
+  onRegenerate,
+  busy,
+}: Props) => {
   const theme = useTheme();
   const isUser = msg.role === "user";
+  const refs = collectImageRefs(msg, convId);
 
   if (isUser) {
     const userHasContent = !!msg.content;
-    const userHasImages = !!msg.images && msg.images.length > 0;
+    const userHasImages = refs.length > 0;
     const userShowActions = userHasContent || userHasImages;
     return (
       <div
@@ -80,18 +111,20 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
               maxWidth: "78%",
             }}
           >
-            {msg.images!.map((src) => (
+            {refs.map((ref) => (
               <img
-                key={src}
-                src={imgSrc(src)}
+                key={ref.src}
+                src={ref.src}
                 alt=""
                 loading="lazy"
+                onClick={() => void openImageFullSize(ref)}
                 css={{
                   maxWidth: 220,
                   maxHeight: 220,
                   borderRadius: theme.border.radius,
                   border: `1px solid ${theme.colors.border}`,
                   objectFit: "cover",
+                  cursor: "zoom-in",
                 }}
               />
             ))}
@@ -114,13 +147,18 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
           </div>
         )}
         {userShowActions && (
-          <MessageActions msg={msg} onDeleteFrom={onDeleteFrom} busy={busy} />
+          <MessageActions
+            msg={msg}
+            refs={refs}
+            onDeleteFrom={onDeleteFrom}
+            busy={busy}
+          />
         )}
       </div>
     );
   }
 
-  const hasImages = !!msg.images && msg.images.length > 0;
+  const hasImages = refs.length > 0;
   const hasContent = !!msg.content;
   const isPending = msg.status === "pending";
   const isError = msg.status === "error";
@@ -156,14 +194,14 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
             flexWrap: "wrap",
           }}
         >
-          {msg.images!.map((src) => (
+          {refs.map((ref) => (
             <img
-              key={src}
-              src={pngDataUrl(src)}
+              key={ref.src}
+              src={ref.src}
               alt=""
               loading="lazy"
               title="open full size"
-              onClick={() => void openImageFullSize(src)}
+              onClick={() => void openImageFullSize(ref)}
               css={{
                 maxWidth: 480,
                 maxHeight: 480,
@@ -212,6 +250,7 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
       {showActions && (
         <MessageActions
           msg={msg}
+          refs={refs}
           onDeleteFrom={onDeleteFrom}
           onRegenerate={onRegenerate}
           busy={busy}
@@ -223,11 +262,13 @@ const MessageView = ({ msg, onDeleteFrom, onRegenerate, busy }: Props) => {
 
 const MessageActions = ({
   msg,
+  refs,
   onDeleteFrom,
   onRegenerate,
   busy,
 }: {
   msg: DisplayMessage;
+  refs: ImageRef[];
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
   busy?: boolean;
@@ -237,13 +278,13 @@ const MessageActions = ({
   const isAssistant = msg.role === "assistant";
   // Image-side actions only apply to assistant messages — user uploads
   // came from the user's own device, no point copying or re-downloading.
-  const firstImage = isAssistant ? msg.images?.[0] : undefined;
+  const firstImage = isAssistant ? refs[0] : undefined;
   const canMutate = typeof msg.id === "number" && !busy;
 
   const copy = async () => {
     try {
       if (firstImage) {
-        const raw = await (await fetch(pngDataUrl(firstImage))).blob();
+        const raw = await (await fetch(firstImage.src)).blob();
         const blob = new Blob([raw], { type: "image/png" });
         await navigator.clipboard.write([
           new ClipboardItem({ "image/png": blob }),
@@ -263,7 +304,7 @@ const MessageActions = ({
   const downloadImage = () => {
     if (!firstImage) return;
     const a = document.createElement("a");
-    a.href = pngDataUrl(firstImage);
+    a.href = firstImage.src;
     a.download = `chat-image-${Date.now()}.png`;
     document.body.appendChild(a);
     a.click();

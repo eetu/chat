@@ -119,13 +119,71 @@ pub async fn delete_conversation(
     }
 }
 
+#[derive(Debug, Serialize)]
+struct MessageDto {
+    id: i64,
+    role: String,
+    content: String,
+    created_at: i64,
+    /// Number of image attachments. Bytes are fetched lazily via
+    /// `/api/conversations/{cid}/messages/{mid}/image/{idx}` so chat list
+    /// responses stay small.
+    #[serde(skip_serializing_if = "is_zero")]
+    image_count: usize,
+    status: String,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+fn message_to_dto(m: crate::storage::Message) -> MessageDto {
+    MessageDto {
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        created_at: m.created_at,
+        image_count: m.image_count,
+        status: m.status,
+    }
+}
+
 pub async fn get_messages(
     state: web::Data<Arc<AppState>>,
     user: AuthUser,
     path: web::Path<String>,
 ) -> HttpResponse {
     match state.storage.list_messages(&user.sub, &path) {
-        Ok(rows) => HttpResponse::Ok().json(rows),
+        Ok(rows) => {
+            let dtos: Vec<MessageDto> = rows.into_iter().map(message_to_dto).collect();
+            HttpResponse::Ok().json(dtos)
+        }
+        Err(e) => storage_err(e),
+    }
+}
+
+pub async fn get_message_image(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    req: actix_web::HttpRequest,
+    path: web::Path<(String, i64, usize)>,
+) -> HttpResponse {
+    let (conv_id, msg_id, idx) = path.into_inner();
+    let etag = format!("\"m{msg_id}i{idx}\"");
+    if let Some(h) = req.headers().get("if-none-match") {
+        if h.to_str().map(|v| v == etag).unwrap_or(false) {
+            return HttpResponse::NotModified().finish();
+        }
+    }
+    match state
+        .storage
+        .get_message_image_bytes(&user.sub, &conv_id, msg_id, idx)
+    {
+        Ok((bytes, mime)) => HttpResponse::Ok()
+            .content_type(mime)
+            .insert_header(("Cache-Control", "private, max-age=86400, immutable"))
+            .insert_header(("ETag", etag))
+            .body(bytes),
         Err(e) => storage_err(e),
     }
 }
@@ -193,20 +251,31 @@ pub async fn chat(
         .map_err(storage_actix_err)?;
     // Drop in-flight (pending) rows so we never feed the model a turn that
     // hasn't completed yet. Only carry images on user turns — assistant
-    // image-gen rows hold base64 PNGs we don't want re-sent to chat models.
+    // image-gen rows hold PNG bytes we don't want re-sent to chat models.
+    // Images for user-role rows are fetched from message_images and base64
+    // -encoded only when forwarding to Ollama (no longer sit in the in-
+    // memory message list).
     let messages: Vec<ChatMessage> = history
         .into_iter()
         .filter(|m| m.status != "pending")
         .map(|m| {
             let is_user = m.role == "user";
+            let images = if is_user && m.image_count > 0 {
+                match state.storage.get_message_images_b64(m.id) {
+                    Ok(v) if !v.is_empty() => Some(v),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!("history image load failed for msg {}: {e}", m.id);
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             ChatMessage {
                 role: m.role,
                 content: m.content,
-                images: if is_user && !m.images.is_empty() {
-                    Some(m.images)
-                } else {
-                    None
-                },
+                images,
             }
         })
         .collect();
@@ -434,6 +503,9 @@ fn storage_err(e: StorageError) -> HttpResponse {
     match e {
         StorageError::NotFound => HttpResponse::NotFound().finish(),
         StorageError::Forbidden => HttpResponse::Forbidden().finish(),
+        StorageError::Invalid(msg) => HttpResponse::BadRequest().json(serde_json::json!({
+            "error": msg,
+        })),
         StorageError::Sqlite(err) => {
             tracing::error!("sqlite error: {err}");
             HttpResponse::InternalServerError().finish()
@@ -468,6 +540,7 @@ fn storage_actix_err(e: StorageError) -> actix_web::Error {
     match e {
         StorageError::NotFound => actix_web::error::ErrorNotFound("not found"),
         StorageError::Forbidden => actix_web::error::ErrorForbidden("forbidden"),
+        StorageError::Invalid(msg) => actix_web::error::ErrorBadRequest(msg),
         StorageError::Sqlite(err) => {
             tracing::error!("sqlite error: {err}");
             actix_web::error::ErrorInternalServerError("storage error")

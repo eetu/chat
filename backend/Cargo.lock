@@ -552,6 +552,7 @@ dependencies = [
  "actix-session",
  "actix-web",
  "actix-web-lab",
+ "base64 0.22.1",
  "chrono",
  "dotenvy",
  "futures-util",
