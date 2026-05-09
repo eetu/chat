@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { resizeImageForUpload } from "../image";
+import { mq } from "../mq";
 import ModelPicker from "./ModelPicker";
 
 type Mode = "chat" | "image";
@@ -579,166 +580,202 @@ const RefineControl = ({
   }, [open]);
 
   return (
-    <div
-      ref={wrapRef}
-      className="refine-control"
-      css={{
-        position: "relative",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 0,
-        ...(showChevron && {
-          "& .refine-chevron": {
-            opacity: 0,
-            width: 0,
-            transition: "opacity 120ms ease, width 120ms ease",
-            pointerEvents: "none",
-          },
-          "&:hover .refine-chevron, &:focus-within .refine-chevron": {
-            opacity: 1,
-            width: 18,
-            pointerEvents: "auto",
-          },
-          "@media (hover: none)": {
+    <>
+      {open && (
+        <div
+          aria-hidden
+          onClick={() => setOpen(false)}
+          css={{
+            position: "fixed",
+            inset: 0,
+            // Transparent on desktop — outside-pointer listener closes the
+            // popup; the overlay only catches clicks that may not bubble
+            // through scrollable parents. Dimmed on mobile so the
+            // bottom-sheet feels anchored.
+            background: "transparent",
+            zIndex: 19,
+            [mq[0]]: { background: "rgba(0,0,0,0.4)" },
+          }}
+        />
+      )}
+      <div
+        ref={wrapRef}
+        className="refine-control"
+        css={{
+          position: "relative",
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 0,
+          ...(showChevron && {
+            "& .refine-chevron": {
+              opacity: 0,
+              width: 0,
+              transition: "opacity 120ms ease, width 120ms ease",
+              pointerEvents: "none",
+            },
+            "&:hover .refine-chevron, &:focus-within .refine-chevron": {
+              opacity: 1,
+              width: 18,
+              pointerEvents: "auto",
+            },
+            "@media (hover: none)": {
+              "& .refine-chevron": {
+                opacity: 1,
+                width: 18,
+                pointerEvents: "auto",
+              },
+            },
+          }),
+          ...(open && {
             "& .refine-chevron": {
               opacity: 1,
               width: 18,
               pointerEvents: "auto",
             },
-          },
-        }),
-        ...(open && {
-          "& .refine-chevron": {
-            opacity: 1,
-            width: 18,
-            pointerEvents: "auto",
-          },
-        }),
-      }}
-    >
-      <button
-        type="button"
-        aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
-        title={
-          refine
-            ? "prompt refiner is on — model expands the prompt before generation"
-            : "prompt refiner is off — model describes the result for next-turn context"
-        }
-        aria-pressed={refine}
-        onClick={onToggleRefine}
-        css={{
-          ...composerSubButtonCss(theme),
-          color: accent,
+          }),
         }}
       >
-        <span className="material-icons-outlined" css={{ fontSize: 22 }}>
-          auto_fix_high
-        </span>
-      </button>
-      {showChevron && (
         <button
           type="button"
-          className="refine-chevron"
-          aria-label="choose prompt persona"
-          aria-haspopup="menu"
-          aria-expanded={open}
+          aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
           title={
-            personas.find((p) => p.id === persona)?.label ?? "prompt persona"
+            refine
+              ? "prompt refiner is on — model expands the prompt before generation"
+              : "prompt refiner is off — model describes the result for next-turn context"
           }
-          onClick={() => setOpen((v) => !v)}
+          aria-pressed={refine}
+          onClick={onToggleRefine}
           css={{
-            height: 28,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            border: "none",
-            background: "transparent",
+            ...composerSubButtonCss(theme),
             color: accent,
-            cursor: "pointer",
-            padding: 0,
-            overflow: "hidden",
-            "&:hover": { color: theme.colors.text.main },
           }}
         >
-          <span className="material-icons-outlined" css={{ fontSize: 18 }}>
-            {open ? "expand_less" : "expand_more"}
+          <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+            auto_fix_high
           </span>
         </button>
-      )}
-      {open && (
-        <div
-          role="menu"
-          css={{
-            position: "absolute",
-            bottom: "calc(100% + 8px)",
-            left: 0,
-            minWidth: 240,
-            maxWidth: 320,
-            padding: 6,
-            borderRadius: 12,
-            border: `1px solid ${theme.colors.border}`,
-            background: theme.colors.background.main,
-            boxShadow: theme.shadows.main,
-            display: "flex",
-            flexDirection: "column",
-            gap: 2,
-            zIndex: 20,
-          }}
-        >
-          {personas.map((p) => {
-            const selected = p.id === persona;
-            return (
-              <button
-                key={p.id}
-                type="button"
-                role="menuitemradio"
-                aria-checked={selected}
-                onClick={() => {
-                  onPersonaChange(p.id);
-                  setOpen(false);
-                }}
-                css={{
-                  textAlign: "left",
-                  border: "none",
-                  borderRadius: 8,
-                  padding: "8px 10px",
-                  background: selected
-                    ? theme.colors.activity.onSoft
-                    : "transparent",
-                  color: theme.colors.text.main,
-                  cursor: "pointer",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 2,
-                  "&:hover": {
+        {showChevron && (
+          <button
+            type="button"
+            className="refine-chevron"
+            aria-label="choose prompt persona"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            title={
+              personas.find((p) => p.id === persona)?.label ?? "prompt persona"
+            }
+            onClick={() => setOpen((v) => !v)}
+            css={{
+              height: 28,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              background: "transparent",
+              color: accent,
+              cursor: "pointer",
+              padding: 0,
+              overflow: "hidden",
+              "&:hover": { color: theme.colors.text.main },
+            }}
+          >
+            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+              {open ? "expand_less" : "expand_more"}
+            </span>
+          </button>
+        )}
+        {open && (
+          <div
+            role="menu"
+            css={{
+              position: "absolute",
+              bottom: "calc(100% + 8px)",
+              left: 0,
+              minWidth: 240,
+              maxWidth: 320,
+              padding: 6,
+              borderRadius: 12,
+              border: `1px solid ${theme.colors.border}`,
+              background: theme.colors.background.main,
+              boxShadow: theme.shadows.main,
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              zIndex: 20,
+              [mq[0]]: {
+                position: "fixed",
+                left: 12,
+                right: 12,
+                bottom: 92,
+                top: "auto",
+                minWidth: 0,
+                maxWidth: "none",
+                maxHeight: "70vh",
+                overflowY: "auto",
+                padding: 8,
+                borderRadius: 14,
+              },
+            }}
+          >
+            {personas.map((p) => {
+              const selected = p.id === persona;
+              return (
+                <button
+                  key={p.id}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={selected}
+                  onClick={() => {
+                    onPersonaChange(p.id);
+                    setOpen(false);
+                  }}
+                  css={{
+                    textAlign: "left",
+                    border: "none",
+                    borderRadius: 8,
+                    padding: "8px 10px",
                     background: selected
                       ? theme.colors.activity.onSoft
-                      : theme.colors.background.light,
-                  },
-                }}
-              >
-                <span
-                  css={{
-                    ...theme.typography.body2,
-                    fontWeight: selected ? 600 : 500,
+                      : "transparent",
+                    color: theme.colors.text.main,
+                    cursor: "pointer",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 2,
+                    "&:hover": {
+                      background: selected
+                        ? theme.colors.activity.onSoft
+                        : theme.colors.background.light,
+                    },
+                    [mq[0]]: {
+                      padding: "12px 14px",
+                      gap: 4,
+                    },
                   }}
                 >
-                  {p.label}
-                </span>
-                <span
-                  css={{
-                    ...theme.typography.caption,
-                    color: theme.colors.text.muted,
-                  }}
-                >
-                  {p.description}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
+                  <span
+                    css={{
+                      ...theme.typography.body2,
+                      fontWeight: selected ? 600 : 500,
+                    }}
+                  >
+                    {p.label}
+                  </span>
+                  <span
+                    css={{
+                      ...theme.typography.caption,
+                      color: theme.colors.text.muted,
+                    }}
+                  >
+                    {p.description}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </>
   );
 };
 
