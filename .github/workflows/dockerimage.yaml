@@ -86,3 +86,18 @@ jobs:
           build-args: |
             CHAT_IMAGE_TAG=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           platforms: linux/arm64
+          # Skip the provenance + SBOM attestations buildx attaches by
+          # default. Each one becomes its own ghcr "version", inflating
+          # the package version count 3× on every push for no real
+          # benefit on a single-platform image.
+          provenance: false
+          sbom: false
+
+      - name: Prune untagged image versions
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: chat
+          package-type: container
+          delete-only-untagged-versions: true
+          min-versions-to-keep: 5
