@@ -48,6 +48,95 @@ const collectImageRefs = (msg: DisplayMessage, convId?: string): ImageRef[] => {
   return [];
 };
 
+/**
+ * Image with a skeleton placeholder shown until the actual bytes load.
+ * Holds an explicit aspect ratio so the layout doesn't jump when the
+ * image swaps in. Most generated images are 1024×1024, so a square
+ * default fits well; user uploads usually crop to a square thumbnail.
+ */
+const ChatImage = ({
+  image,
+  variant,
+  onClick,
+}: {
+  image: ImageRef;
+  variant: "user" | "assistant";
+  onClick?: () => void;
+}) => {
+  const theme = useTheme();
+  const [loaded, setLoaded] = useState(false);
+  const [errored, setErrored] = useState(false);
+  const isUser = variant === "user";
+  return (
+    <div
+      onClick={onClick}
+      title={onClick ? "open full size" : undefined}
+      css={{
+        position: "relative",
+        overflow: "hidden",
+        borderRadius: theme.border.radius,
+        border: `1px solid ${theme.colors.border}`,
+        background: theme.colors.background.light,
+        cursor: onClick ? "zoom-in" : "default",
+        ...(isUser
+          ? { width: 220, height: 220 }
+          : {
+              maxWidth: 480,
+              width: "100%",
+              aspectRatio: "1 / 1",
+            }),
+      }}
+    >
+      {!loaded && !errored && (
+        <div
+          aria-hidden
+          css={{
+            position: "absolute",
+            inset: 0,
+            background: `linear-gradient(90deg, ${theme.colors.background.light} 0%, ${theme.colors.background.main} 50%, ${theme.colors.background.light} 100%)`,
+            backgroundSize: "200% 100%",
+            animation: "chat-shimmer 1.4s ease-in-out infinite",
+            "@keyframes chat-shimmer": {
+              "0%": { backgroundPosition: "200% 0" },
+              "100%": { backgroundPosition: "-200% 0" },
+            },
+          }}
+        />
+      )}
+      {errored && (
+        <div
+          css={{
+            position: "absolute",
+            inset: 0,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: theme.colors.text.muted,
+            ...theme.typography.caption,
+          }}
+        >
+          image unavailable
+        </div>
+      )}
+      <img
+        src={image.src}
+        alt=""
+        loading="lazy"
+        onLoad={() => setLoaded(true)}
+        onError={() => setErrored(true)}
+        css={{
+          display: "block",
+          width: "100%",
+          height: "100%",
+          objectFit: isUser ? "cover" : "contain",
+          opacity: loaded ? 1 : 0,
+          transition: "opacity 180ms ease",
+        }}
+      />
+    </div>
+  );
+};
+
 // Chrome blocks top-level `data:` navigation, so opening a persisted
 // image just delegates to a same-origin URL. Optimistic (pre-persist)
 // images route through a blob URL.
@@ -112,20 +201,11 @@ const MessageView = ({
             }}
           >
             {refs.map((ref) => (
-              <img
+              <ChatImage
                 key={ref.src}
-                src={ref.src}
-                alt=""
-                loading="lazy"
+                image={ref}
+                variant="user"
                 onClick={() => void openImageFullSize(ref)}
-                css={{
-                  maxWidth: 220,
-                  maxHeight: 220,
-                  borderRadius: theme.border.radius,
-                  border: `1px solid ${theme.colors.border}`,
-                  objectFit: "cover",
-                  cursor: "zoom-in",
-                }}
               />
             ))}
           </div>
@@ -195,23 +275,11 @@ const MessageView = ({
           }}
         >
           {refs.map((ref) => (
-            <img
+            <ChatImage
               key={ref.src}
-              src={ref.src}
-              alt=""
-              loading="lazy"
-              title="open full size"
+              image={ref}
+              variant="assistant"
               onClick={() => void openImageFullSize(ref)}
-              css={{
-                maxWidth: 480,
-                maxHeight: 480,
-                width: "100%",
-                height: "auto",
-                borderRadius: theme.border.radius,
-                border: `1px solid ${theme.colors.border}`,
-                objectFit: "contain",
-                cursor: "zoom-in",
-              }}
             />
           ))}
         </div>
