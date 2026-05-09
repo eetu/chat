@@ -12,12 +12,19 @@ import ModelPicker from "./ModelPicker";
 
 type Mode = "chat" | "image";
 
+type Persona = {
+  id: string;
+  label: string;
+  description: string;
+};
+
 type Props = {
   onSend: (
     content: string,
     images?: string[],
     mode?: Mode,
     refine?: boolean,
+    persona?: string,
   ) => void;
   /** When true, the send button switches to a stop button. */
   streaming?: boolean;
@@ -42,6 +49,8 @@ type Props = {
   imageGen?: boolean;
   /** Whether the server has a prompt refiner model configured. */
   refinerAvailable?: boolean;
+  /** Available image-prompt personas. */
+  personas?: Persona[];
 };
 
 /**
@@ -51,6 +60,7 @@ type Props = {
  * button. No bottom hint line; the rounded shell carries the whole input.
  */
 const REFINE_KEY = "chat:refineImagePrompt";
+const PERSONA_KEY = "chat:imagePersona";
 
 const Composer = ({
   onSend,
@@ -63,6 +73,7 @@ const Composer = ({
   chatCap = true,
   imageGen = false,
   refinerAvailable = false,
+  personas = [],
 }: Props) => {
   const theme = useTheme();
   const [value, setValue] = useState("");
@@ -110,6 +121,23 @@ const Composer = ({
       return next;
     });
   };
+  const [persona, setPersona] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem(PERSONA_KEY) ?? "default";
+    } catch {
+      return "default";
+    }
+  });
+  const showPersonaPicker =
+    mode === "image" && refinerAvailable && refine && personas.length > 0;
+  const onPersonaChange = (next: string) => {
+    setPersona(next);
+    try {
+      window.localStorage.setItem(PERSONA_KEY, next);
+    } catch {
+      // ignore
+    }
+  };
   // Counter ref so nested children's dragenter/leave events don't flicker
   // the highlight; the overlay only goes away once drag has fully left
   // the shell.
@@ -140,7 +168,13 @@ const Composer = ({
     if ((!trimmed && attached.length === 0) || streaming) return;
     const imgs =
       attached.length > 0 ? attached.map((a) => a.base64) : undefined;
-    onSend(trimmed, imgs, mode, mode === "image" ? refine : undefined);
+    onSend(
+      trimmed,
+      imgs,
+      mode,
+      mode === "image" ? refine : undefined,
+      mode === "image" && refine ? persona : undefined,
+    );
     setValue("");
     setAttached([]);
     if (recallIndex !== -1) setRecallIndex(-1);
@@ -450,30 +484,13 @@ const Composer = ({
               </button>
             )}
             {showRefineToggle && (
-              <button
-                type="button"
-                aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
-                title={
-                  refine
-                    ? "prompt refiner is on — model expands the prompt before generation"
-                    : "prompt refiner is off — model describes the result for next-turn context"
-                }
-                aria-pressed={refine}
-                onClick={toggleRefine}
-                css={{
-                  ...composerSubButtonCss(theme),
-                  color: refine
-                    ? theme.colors.activity.on
-                    : theme.colors.text.muted,
-                }}
-              >
-                <span
-                  className="material-icons-outlined"
-                  css={{ fontSize: 22 }}
-                >
-                  auto_fix_high
-                </span>
-              </button>
+              <RefineControl
+                refine={refine}
+                onToggleRefine={toggleRefine}
+                personas={showPersonaPicker ? personas : []}
+                persona={persona}
+                onPersonaChange={onPersonaChange}
+              />
             )}
           </div>
           <div css={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -519,6 +536,208 @@ const Composer = ({
           </div>
         </div>
       </div>
+    </div>
+  );
+};
+
+const RefineControl = ({
+  refine,
+  onToggleRefine,
+  personas,
+  persona,
+  onPersonaChange,
+}: {
+  refine: boolean;
+  onToggleRefine: () => void;
+  personas: Persona[];
+  persona: string;
+  onPersonaChange: (id: string) => void;
+}) => {
+  const theme = useTheme();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const showChevron = personas.length > 0;
+  const accent = refine ? theme.colors.activity.on : theme.colors.text.muted;
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: PointerEvent) => {
+      const el = wrapRef.current;
+      if (!el || !(e.target instanceof Node) || !el.contains(e.target)) {
+        setOpen(false);
+      }
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div
+      ref={wrapRef}
+      className="refine-control"
+      css={{
+        position: "relative",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 0,
+        ...(showChevron && {
+          "& .refine-chevron": {
+            opacity: 0,
+            width: 0,
+            transition: "opacity 120ms ease, width 120ms ease",
+            pointerEvents: "none",
+          },
+          "&:hover .refine-chevron, &:focus-within .refine-chevron": {
+            opacity: 1,
+            width: 18,
+            pointerEvents: "auto",
+          },
+          "@media (hover: none)": {
+            "& .refine-chevron": {
+              opacity: 1,
+              width: 18,
+              pointerEvents: "auto",
+            },
+          },
+        }),
+        ...(open && {
+          "& .refine-chevron": {
+            opacity: 1,
+            width: 18,
+            pointerEvents: "auto",
+          },
+        }),
+      }}
+    >
+      <button
+        type="button"
+        aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
+        title={
+          refine
+            ? "prompt refiner is on — model expands the prompt before generation"
+            : "prompt refiner is off — model describes the result for next-turn context"
+        }
+        aria-pressed={refine}
+        onClick={onToggleRefine}
+        css={{
+          ...composerSubButtonCss(theme),
+          color: accent,
+        }}
+      >
+        <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+          auto_fix_high
+        </span>
+      </button>
+      {showChevron && (
+        <button
+          type="button"
+          className="refine-chevron"
+          aria-label="choose prompt persona"
+          aria-haspopup="menu"
+          aria-expanded={open}
+          title={
+            personas.find((p) => p.id === persona)?.label ?? "prompt persona"
+          }
+          onClick={() => setOpen((v) => !v)}
+          css={{
+            height: 28,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            background: "transparent",
+            color: accent,
+            cursor: "pointer",
+            padding: 0,
+            overflow: "hidden",
+            "&:hover": { color: theme.colors.text.main },
+          }}
+        >
+          <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+            {open ? "expand_less" : "expand_more"}
+          </span>
+        </button>
+      )}
+      {open && (
+        <div
+          role="menu"
+          css={{
+            position: "absolute",
+            bottom: "calc(100% + 8px)",
+            left: 0,
+            minWidth: 240,
+            maxWidth: 320,
+            padding: 6,
+            borderRadius: 12,
+            border: `1px solid ${theme.colors.border}`,
+            background: theme.colors.background.main,
+            boxShadow: theme.shadows.main,
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            zIndex: 20,
+          }}
+        >
+          {personas.map((p) => {
+            const selected = p.id === persona;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={selected}
+                onClick={() => {
+                  onPersonaChange(p.id);
+                  setOpen(false);
+                }}
+                css={{
+                  textAlign: "left",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "8px 10px",
+                  background: selected
+                    ? theme.colors.activity.onSoft
+                    : "transparent",
+                  color: theme.colors.text.main,
+                  cursor: "pointer",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  "&:hover": {
+                    background: selected
+                      ? theme.colors.activity.onSoft
+                      : theme.colors.background.light,
+                  },
+                }}
+              >
+                <span
+                  css={{
+                    ...theme.typography.body2,
+                    fontWeight: selected ? 600 : 500,
+                  }}
+                >
+                  {p.label}
+                </span>
+                <span
+                  css={{
+                    ...theme.typography.caption,
+                    color: theme.colors.text.muted,
+                  }}
+                >
+                  {p.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };

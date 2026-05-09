@@ -2,6 +2,7 @@ pub mod auth;
 pub mod handlers;
 pub mod oidc;
 pub mod ollama;
+pub mod personas;
 pub mod settings;
 pub mod storage;
 
@@ -97,6 +98,7 @@ pub fn create_app(
                 .route("/me", web::get().to(auth::me))
                 .route("/models", web::get().to(handlers::list_models))
                 .route("/models/caps", web::get().to(handlers::model_caps))
+                .route("/personas", web::get().to(handlers::list_personas))
                 .service(
                     web::scope("/conversations")
                         .route("", web::get().to(handlers::list_conversations))

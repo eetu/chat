@@ -60,6 +60,7 @@ export function useChat(convId: string | undefined) {
       images?: string[],
       mode?: "chat" | "image",
       refine?: boolean,
+      persona?: string,
     ) => {
       if (!convId || streaming) return;
       const controller = new AbortController();
@@ -78,7 +79,7 @@ export function useChat(convId: string | undefined) {
 
       try {
         for await (const evt of streamChat(
-          { conv_id: convId, content, model, images, mode, refine },
+          { conv_id: convId, content, model, images, mode, refine, persona },
           controller.signal,
         )) {
           if (evt.type === "delta") {

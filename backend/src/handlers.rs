@@ -8,6 +8,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::auth::AuthUser;
 use crate::ollama::{self, ChatMessage};
+use crate::personas;
 use crate::storage::StorageError;
 use crate::AppState;
 
@@ -223,6 +224,14 @@ pub struct ChatBody {
     /// describes the generated image so subsequent turns have context.
     #[serde(default)]
     pub refine: Option<bool>,
+    /// Persona id selecting the voice the refiner adopts. See
+    /// `personas::list()`. Unknown / missing → default persona.
+    #[serde(default)]
+    pub persona: Option<String>,
+}
+
+pub async fn list_personas() -> HttpResponse {
+    HttpResponse::Ok().json(personas::list())
 }
 
 pub async fn chat(
@@ -316,12 +325,14 @@ pub async fn chat(
         // Default refine on; only honour the client toggle when a refiner is
         // actually configured server-side.
         let refine_enabled = refiner_model.is_some() && body.refine.unwrap_or(true);
+        let persona_system = personas::system_prompt(body.persona.as_deref());
         tokio::spawn(async move {
             let refined = if refine_enabled {
                 match refiner_model.as_deref() {
                     Some(m) => match ollama::refine_image_prompt(
                         state_clone.clone(),
                         m,
+                        &persona_system,
                         &refiner_history,
                     )
                     .await

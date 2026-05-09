@@ -38,6 +38,12 @@ export type Status = {
   refiner_available: boolean;
 };
 
+export type Persona = {
+  id: string;
+  label: string;
+  description: string;
+};
+
 const json = async <T>(res: Response): Promise<T> => {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -49,6 +55,8 @@ const json = async <T>(res: Response): Promise<T> => {
 export const api = {
   me: () => fetch("/api/me", { credentials: "include" }).then(json<Me>),
   status: () => fetch("/status").then(json<Status>),
+  personas: () =>
+    fetch("/api/personas", { credentials: "include" }).then(json<Persona[]>),
   models: () =>
     fetch("/api/models", { credentials: "include" }).then(
       json<{ models?: Array<{ name: string; locked?: boolean }> }>,
@@ -105,6 +113,7 @@ export async function* streamChat(
     images?: string[];
     mode?: "chat" | "image";
     refine?: boolean;
+    persona?: string;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {

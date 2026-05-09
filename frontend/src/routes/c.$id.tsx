@@ -4,7 +4,7 @@ import { createFileRoute, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, Conversation, ModelCapabilities, Status } from "../api";
+import { api, Conversation, ModelCapabilities, Persona, Status } from "../api";
 import Composer from "../components/Composer";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
@@ -106,18 +106,23 @@ const ChatView = () => {
   );
 
   const { data: status } = useSWR<Status>("/status", api.status);
+  const { data: personas } = useSWR<Persona[]>(
+    status?.refiner_available ? "/api/personas" : null,
+    api.personas,
+  );
 
   const sendWithModel = (
     content: string,
     images?: string[],
     mode?: "chat" | "image",
     refine?: boolean,
+    persona?: string,
   ) => {
     // The user just hit send — they expect to see their message and the
     // incoming reply. Re-glue to the bottom regardless of where they were.
     stickRef.current = true;
     setShowJump(false);
-    void send(content, model ?? undefined, images, mode, refine);
+    void send(content, model ?? undefined, images, mode, refine, persona);
   };
 
   const onScroll = () => {
@@ -127,10 +132,13 @@ const ChatView = () => {
     prevScrollTopRef.current = el.scrollTop;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     const atBottom = distance < REGLUE_THRESHOLD_PX;
-    if (direction < 0) {
-      stickRef.current = false;
-    } else if (atBottom) {
+    // atBottom wins over direction so bounce/rubber-band events that
+    // briefly fire a negative-direction scroll while the viewport is
+    // still pinned at the bottom don't flicker stick off → on.
+    if (atBottom) {
       stickRef.current = true;
+    } else if (direction < 0) {
+      stickRef.current = false;
     }
     setShowJump(!stickRef.current && streaming);
   };
@@ -177,6 +185,7 @@ const ChatView = () => {
       model?: string | null;
       mode?: "chat" | "image";
       refine?: boolean;
+      persona?: string;
     };
     const parsed = ((): Pending | null => {
       try {
@@ -200,6 +209,7 @@ const ChatView = () => {
       parsed.images,
       parsed.mode,
       parsed.refine,
+      parsed.persona,
     );
   }, [id, loaded, send]);
 
@@ -304,6 +314,7 @@ const ChatView = () => {
           chatCap={caps?.chat ?? true}
           imageGen={caps?.image_gen ?? false}
           refinerAvailable={status?.refiner_available ?? false}
+          personas={personas}
         />
       </div>
     </>
