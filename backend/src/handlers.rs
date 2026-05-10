@@ -555,6 +555,14 @@ pub async fn chat(
                         .await;
                 }
             }
+            // Match ollama's keep_alive:0 pattern — POST /free after every
+            // ComfyUI job (success, error, or cancellation) so Kontext +
+            // T5 + CLIP + VAE don't sit resident between requests. Next
+            // job reloads from disk in ~10–15 s but the chat / refiner
+            // models get the RAM back in the meantime.
+            if use_kontext {
+                comfyui::free_memory(&state_clone).await;
+            }
         });
 
         let stream = ReceiverStream::new(rx);

@@ -495,6 +495,35 @@ pub(crate) async fn interrupt_and_dequeue(state: &AppState, base: &str, prompt_i
     }
 }
 
+/// Tell ComfyUI to unload all checkpoints + free its torch allocator.
+/// Mirrors `ollama::evict` (per-request `keep_alive: 0`) so neither
+/// upstream sits resident between requests on a 24 GB unified-memory
+/// host. Next img2img job pays a ~10–15 s reload from disk; in exchange
+/// the chat / refiner models can occupy the freed RAM during idle
+/// stretches. Best-effort — failures only warn.
+pub async fn free_memory(state: &AppState) {
+    let Some(base) = state
+        .settings
+        .comfyui_url
+        .as_deref()
+        .map(|u| u.trim_end_matches('/').to_string())
+    else {
+        return;
+    };
+    if let Err(e) = state
+        .http_client
+        .post(format!("{base}/free"))
+        .json(&serde_json::json!({
+            "unload_models": true,
+            "free_memory": true,
+        }))
+        .send()
+        .await
+    {
+        tracing::warn!("comfyui /free failed: {e}");
+    }
+}
+
 /// Standalone cancel entry point used by the explicit cancel route, for
 /// the case where the user wants to stop a generation from a tab that
 /// isn't holding the original SSE connection (e.g. after a page reload).
