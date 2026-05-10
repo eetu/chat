@@ -1,5 +1,5 @@
 import { Theme, useTheme } from "@emotion/react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { imageUrl, Message } from "../api";
 import Markdown from "./Markdown";
@@ -143,22 +143,89 @@ const ChatImage = ({
   );
 };
 
-// Chrome blocks top-level `data:` navigation, so opening a persisted
-// image just delegates to a same-origin URL. Optimistic (pre-persist)
-// images route through a blob URL.
-const openImageFullSize = async (ref: ImageRef) => {
-  if (ref.isUrl) {
-    window.open(ref.src, "_blank", "noopener,noreferrer");
-    return;
-  }
-  try {
-    const blob = await (await fetch(ref.src)).blob();
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank", "noopener,noreferrer");
-    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  } catch (e) {
-    console.error("open image failed", e);
-  }
+/**
+ * In-app full-screen viewer. Renders a fixed overlay with the image
+ * centered, a close button in the top-left, and ESC + backdrop + button
+ * all dismiss. Avoids `window.open` because mobile home-screen PWAs
+ * don't have browser chrome, leaving the user stuck on a new tab with
+ * no back affordance.
+ */
+const Lightbox = ({ src, onClose }: { src: string; onClose: () => void }) => {
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    // Lock body scroll so the underlying conversation doesn't move
+    // while the viewer is open.
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [onClose]);
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      onClick={onClose}
+      css={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 100,
+        background: "rgba(0, 0, 0, 0.92)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+        // Respect notches / status bar on home-screen PWAs.
+        paddingTop: "calc(env(safe-area-inset-top, 0px) + 16px)",
+        paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)",
+      }}
+    >
+      <button
+        type="button"
+        aria-label="close preview"
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        css={{
+          position: "absolute",
+          top: "calc(env(safe-area-inset-top, 0px) + 12px)",
+          left: 12,
+          width: 40,
+          height: 40,
+          borderRadius: "50%",
+          border: "none",
+          background: "rgba(255, 255, 255, 0.16)",
+          color: "#fff",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+        }}
+      >
+        <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+          close
+        </span>
+      </button>
+      <img
+        src={src}
+        alt=""
+        onClick={(e) => e.stopPropagation()}
+        css={{
+          maxWidth: "100%",
+          maxHeight: "100%",
+          objectFit: "contain",
+          borderRadius: 4,
+        }}
+      />
+    </div>
+  );
 };
 
 const MessageView = ({
@@ -171,6 +238,13 @@ const MessageView = ({
   const theme = useTheme();
   const isUser = msg.role === "user";
   const refs = collectImageRefs(msg, convId);
+  // Single lightbox source shared across the user and assistant image
+  // rows in this message — only one can be open at a time per bubble.
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+
+  const lightbox = lightboxSrc && (
+    <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
+  );
 
   if (isUser) {
     const userHasContent = !!msg.content;
@@ -211,7 +285,7 @@ const MessageView = ({
                 key={ref.src}
                 image={ref}
                 variant="user"
-                onClick={() => void openImageFullSize(ref)}
+                onClick={() => setLightboxSrc(ref.src)}
               />
             ))}
           </div>
@@ -240,6 +314,7 @@ const MessageView = ({
             busy={busy}
           />
         )}
+        {lightbox}
       </div>
     );
   }
@@ -285,7 +360,7 @@ const MessageView = ({
               key={ref.src}
               image={ref}
               variant="assistant"
-              onClick={() => void openImageFullSize(ref)}
+              onClick={() => setLightboxSrc(ref.src)}
             />
           ))}
         </div>
@@ -343,6 +418,7 @@ const MessageView = ({
           busy={busy}
         />
       )}
+      {lightbox}
     </div>
   );
 };
