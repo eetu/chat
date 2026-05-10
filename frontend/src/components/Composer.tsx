@@ -50,6 +50,10 @@ type Props = {
   imageGen?: boolean;
   /** Whether the server has a prompt refiner model configured. */
   refinerAvailable?: boolean;
+  /** Whether the server has an img2img backend wired up (ComfyUI Kontext
+   * today). Drives the inline indicator under the attachment row —
+   * without it the backend silently falls back to Ollama txt2img. */
+  img2imgAvailable?: boolean;
   /** Available image-prompt personas. */
   personas?: Persona[];
 };
@@ -62,6 +66,7 @@ type Props = {
  */
 const REFINE_KEY = "chat:refineImagePrompt";
 const PERSONA_KEY = "chat:imagePersona";
+const IMG2IMG_KEY = "chat:img2img";
 
 const Composer = ({
   onSend,
@@ -74,6 +79,7 @@ const Composer = ({
   chatCap = true,
   imageGen = false,
   refinerAvailable = false,
+  img2imgAvailable = false,
   personas = [],
 }: Props) => {
   const theme = useTheme();
@@ -102,6 +108,33 @@ const Composer = ({
     setMode(imageGen && !chatCap ? "image" : "chat");
   }
   const showModeToggle = chatCap && imageGen;
+  // img2img toggle is independent of the picker model — when on, an
+  // attached image gets edited by the dedicated img2img backend
+  // (ComfyUI Kontext) regardless of whether the chat model has
+  // image_gen caps. Only surfaced when the server is wired for it.
+  const [img2img, setImg2img] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(IMG2IMG_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const showImg2imgToggle = img2imgAvailable;
+  const toggleImg2img = () => {
+    setImg2img((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(IMG2IMG_KEY, next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+  // Effective send-time mode: img2img toggle promotes to "image" so the
+  // backend routes to the img2img path even when the picker model is
+  // a text-only chat model.
+  const effectiveMode: Mode = img2img ? "image" : mode;
   const [refine, setRefine] = useState<boolean>(() => {
     try {
       const v = window.localStorage.getItem(REFINE_KEY);
@@ -110,7 +143,7 @@ const Composer = ({
       return true;
     }
   });
-  const showRefineToggle = mode === "image" && refinerAvailable;
+  const showRefineToggle = effectiveMode === "image" && refinerAvailable;
   const toggleRefine = () => {
     setRefine((prev) => {
       const next = !prev;
@@ -130,7 +163,10 @@ const Composer = ({
     }
   });
   const showPersonaPicker =
-    mode === "image" && refinerAvailable && refine && personas.length > 0;
+    effectiveMode === "image" &&
+    refinerAvailable &&
+    refine &&
+    personas.length > 0;
   const onPersonaChange = (next: string) => {
     setPersona(next);
     try {
@@ -172,9 +208,9 @@ const Composer = ({
     onSend(
       trimmed,
       imgs,
-      mode,
-      mode === "image" ? refine : undefined,
-      mode === "image" && refine ? persona : undefined,
+      effectiveMode,
+      effectiveMode === "image" ? refine : undefined,
+      effectiveMode === "image" && refine ? persona : undefined,
     );
     setValue("");
     setAttached([]);
@@ -188,7 +224,7 @@ const Composer = ({
     for (const file of Array.from(files)) {
       if (!file.type.startsWith("image/")) continue;
       try {
-        const resized = await resizeImageForUpload(file);
+        const resized = await resizeImageForUpload(file, effectiveMode);
         next.push(resized);
       } catch (err) {
         console.error("image resize failed", err);
@@ -201,27 +237,31 @@ const Composer = ({
     setAttached((prev) => prev.filter((_, idx) => idx !== i));
   };
 
+  // Attach affordances surface whenever an image can flow somewhere: a
+  // vision-capable chat model, an image-gen model, or the img2img path
+  // (ComfyUI Kontext, model-independent).
+  const canAttach = vision || imageGen || img2imgAvailable;
   const onDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!vision) return;
+    if (!canAttach) return;
     if (!Array.from(e.dataTransfer.types).includes("Files")) return;
     e.preventDefault();
     dragDepthRef.current++;
     setDragOver(true);
   };
   const onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!vision) return;
+    if (!canAttach) return;
     e.preventDefault();
     dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
     if (dragDepthRef.current === 0) setDragOver(false);
   };
   const onDragOver = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!vision) return;
+    if (!canAttach) return;
     if (!Array.from(e.dataTransfer.types).includes("Files")) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = "copy";
   };
   const onDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    if (!vision) return;
+    if (!canAttach) return;
     e.preventDefault();
     dragDepthRef.current = 0;
     setDragOver(false);
@@ -339,6 +379,34 @@ const Composer = ({
             drop image to attach
           </div>
         )}
+        {attached.length > 0 && img2img && img2imgAvailable && (
+          <div
+            css={{
+              display: "inline-flex",
+              alignSelf: "flex-start",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 8px",
+              margin: "4px 4px 0",
+              borderRadius: 999,
+              border: `1px solid ${theme.colors.border}`,
+              background: theme.colors.activity.onSoft,
+              color: theme.colors.text.main,
+              ...theme.typography.caption,
+            }}
+          >
+            <span
+              className="material-icons-outlined"
+              css={{
+                fontSize: 14,
+                color: theme.colors.activity.on,
+              }}
+            >
+              auto_awesome
+            </span>
+            img2img · flux kontext
+          </div>
+        )}
         {attached.length > 0 && (
           <div
             css={{
@@ -432,13 +500,13 @@ const Composer = ({
           }}
         >
           <div css={{ display: "flex", alignItems: "center", gap: 4 }}>
-            {vision && mode === "chat" && (
+            {canAttach && (
               <>
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
-                  multiple
+                  multiple={mode === "chat"}
                   onChange={(e) => {
                     void onPickFiles(e.target.files);
                     e.target.value = "";
@@ -447,7 +515,9 @@ const Composer = ({
                 />
                 <button
                   type="button"
-                  aria-label="attach image"
+                  aria-label={
+                    mode === "image" ? "attach image to edit" : "attach image"
+                  }
                   onClick={() => fileInputRef.current?.click()}
                   css={composerSubButtonCss(theme)}
                 >
@@ -481,6 +551,32 @@ const Composer = ({
                   css={{ fontSize: 22 }}
                 >
                   {mode === "chat" ? "image" : "chat_bubble_outline"}
+                </span>
+              </button>
+            )}
+            {showImg2imgToggle && (
+              <button
+                type="button"
+                aria-label={img2img ? "img2img: on" : "img2img: off"}
+                title={
+                  img2img
+                    ? "img2img on — attached image will be edited via flux kontext"
+                    : "img2img off — attached image will be analyzed by the chat model"
+                }
+                aria-pressed={img2img}
+                onClick={toggleImg2img}
+                css={{
+                  ...composerSubButtonCss(theme),
+                  color: img2img
+                    ? theme.colors.activity.on
+                    : theme.colors.text.muted,
+                }}
+              >
+                <span
+                  className="material-icons-outlined"
+                  css={{ fontSize: 22 }}
+                >
+                  auto_awesome
                 </span>
               </button>
             )}

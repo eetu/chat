@@ -12,6 +12,12 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   /** Number of persisted attachments — load via `imageUrl(...)`. */
   image_count?: number;
   status?: "done" | "pending" | "error";
+  /** Live sampler progress, fed from the SSE stream while a ComfyUI
+   * img2img job is churning. */
+  progress?: { value: number; max: number };
+  /** Live preview frame (data URL) from ComfyUI's WebSocket. Only
+   * meaningful while the row is pending. */
+  previewDataUrl?: string;
 };
 
 type Props = {
@@ -284,7 +290,12 @@ const MessageView = ({
           ))}
         </div>
       )}
-      {isPending && !hasImages && <ImageGenPlaceholder />}
+      {isPending && !hasImages && (
+        <ImageGenPlaceholder
+          progress={msg.progress}
+          previewDataUrl={msg.previewDataUrl}
+        />
+      )}
       {isError && !hasContent && (
         <div
           css={{
@@ -312,6 +323,14 @@ const MessageView = ({
         ) : (
           <Markdown>{msg.content}</Markdown>
         ))}
+      {isError && (
+        <ErrorActions
+          msg={msg}
+          onRegenerate={onRegenerate}
+          onDeleteFrom={onDeleteFrom}
+          busy={busy}
+        />
+      )}
       {!hasContent && !hasImages && !isPending && !isError && (
         <TypingIndicator />
       )}
@@ -322,6 +341,52 @@ const MessageView = ({
           onDeleteFrom={onDeleteFrom}
           onRegenerate={onRegenerate}
           busy={busy}
+        />
+      )}
+    </div>
+  );
+};
+
+/// Compact action row shown only on assistant rows whose generation
+/// errored — lets the user retry (re-runs the prior user turn) or remove
+/// the failed bubble. Hidden on still-pending rows; those use the stop
+/// button on the composer.
+const ErrorActions = ({
+  msg,
+  onRegenerate,
+  onDeleteFrom,
+  busy,
+}: {
+  msg: DisplayMessage;
+  onRegenerate?: (id: number) => void;
+  onDeleteFrom?: (id: number) => void;
+  busy?: boolean;
+}) => {
+  const theme = useTheme();
+  const canMutate = typeof msg.id === "number" && !busy;
+  if (!canMutate) return null;
+  return (
+    <div
+      css={{
+        display: "flex",
+        gap: 4,
+        marginTop: 2,
+      }}
+    >
+      {onRegenerate && (
+        <ActionButton
+          onClick={() => onRegenerate(msg.id!)}
+          label="retry"
+          icon="refresh"
+          theme={theme}
+        />
+      )}
+      {onDeleteFrom && (
+        <ActionButton
+          onClick={() => onDeleteFrom(msg.id!)}
+          label="remove"
+          icon="delete_outline"
+          theme={theme}
         />
       )}
     </div>
@@ -500,16 +565,32 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
   );
 };
 
-const ImageGenPlaceholder = () => {
+const ImageGenPlaceholder = ({
+  progress,
+  previewDataUrl,
+}: {
+  progress?: { value: number; max: number };
+  previewDataUrl?: string;
+}) => {
   const theme = useTheme();
+  const stepLabel =
+    progress && progress.max > 0
+      ? `step ${progress.value} / ${progress.max}`
+      : "rendering image…";
+  const pct =
+    progress && progress.max > 0
+      ? Math.min(100, Math.round((progress.value / progress.max) * 100))
+      : null;
   return (
     <div
       css={{
+        position: "relative",
         width: "min(480px, 100%)",
         aspectRatio: "1 / 1",
         borderRadius: theme.border.radius,
         border: `1px dashed ${theme.colors.border}`,
         background: theme.colors.background.light,
+        overflow: "hidden",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
@@ -518,20 +599,84 @@ const ImageGenPlaceholder = () => {
         color: theme.colors.text.muted,
       }}
     >
-      <span
-        className="material-icons-outlined"
+      {previewDataUrl ? (
+        <img
+          src={previewDataUrl}
+          alt=""
+          css={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+            // Soften the early latent-decode previews — they're blocky
+            // and saturated by nature.
+            filter: "saturate(0.85)",
+          }}
+        />
+      ) : (
+        <span
+          className="material-icons-outlined"
+          css={{
+            fontSize: 36,
+            animation: "chat-pulse 1.6s ease-in-out infinite",
+            "@keyframes chat-pulse": {
+              "0%, 100%": { opacity: 0.35 },
+              "50%": { opacity: 1 },
+            },
+          }}
+        >
+          image
+        </span>
+      )}
+      <div
         css={{
-          fontSize: 36,
-          animation: "chat-pulse 1.6s ease-in-out infinite",
-          "@keyframes chat-pulse": {
-            "0%, 100%": { opacity: 0.35 },
-            "50%": { opacity: 1 },
-          },
+          position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          padding: "10px 12px 12px",
+          background: previewDataUrl
+            ? "linear-gradient(180deg, rgba(0,0,0,0) 0%, rgba(0,0,0,0.55) 100%)"
+            : "transparent",
+          color: previewDataUrl ? "#fff" : theme.colors.text.muted,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
         }}
       >
-        image
-      </span>
-      <div css={{ ...theme.typography.caption }}>rendering image…</div>
+        {pct !== null && (
+          <div
+            aria-hidden
+            css={{
+              height: 3,
+              borderRadius: 2,
+              background: previewDataUrl
+                ? "rgba(255,255,255,0.25)"
+                : theme.colors.background.main,
+              overflow: "hidden",
+            }}
+          >
+            <div
+              css={{
+                height: "100%",
+                width: `${pct}%`,
+                background: theme.colors.activity.on,
+                transition: "width 240ms ease",
+              }}
+            />
+          </div>
+        )}
+        <div
+          css={{
+            ...theme.typography.caption,
+            textAlign: "center",
+            textShadow: previewDataUrl ? "0 1px 2px rgba(0,0,0,0.4)" : "none",
+          }}
+        >
+          {stepLabel}
+        </div>
+      </div>
     </div>
   );
 };

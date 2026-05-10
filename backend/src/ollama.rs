@@ -45,6 +45,30 @@ pub async fn list_models(state: &AppState) -> Result<serde_json::Value, reqwest:
     state.http_client.get(&url).send().await?.error_for_status()?.json().await
 }
 
+/// Hint Ollama to unload a model. Posts a noop generation with
+/// `keep_alive: 0`, which makes Ollama unload the named model right after
+/// (or, when it isn't currently loaded, immediately). Used before invoking
+/// ComfyUI on memory-constrained hosts where Kontext FP8 (~12 GB) plus a
+/// chat / refiner model would otherwise blow past available VRAM/RAM.
+/// Best-effort — log on failure, never propagate.
+pub async fn evict(state: &AppState, model: &str) {
+    let url = format!("{}/api/generate", state.settings.ollama_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "prompt": "",
+        "keep_alive": 0,
+        "stream": false,
+    });
+    match state.http_client.post(&url).json(&body).send().await {
+        Ok(res) => {
+            if let Err(e) = res.error_for_status() {
+                tracing::warn!("evict({model}) upstream returned error: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("evict({model}) request failed: {e}"),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ModelCapabilities {
     pub vision: bool,
@@ -394,6 +418,10 @@ pub enum ChatStreamError {
     Http(#[from] reqwest::Error),
     #[error("upstream returned no image data")]
     EmptyImage,
+    #[error("comfyui job timed out before producing output")]
+    ComfyTimeout,
+    #[error("client disconnected — comfyui job cancelled")]
+    Cancelled,
 }
 
 /// Helper to wrap a delta into an SSE event with `event: delta`.

@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::auth::AuthUser;
+use crate::comfyui;
 use crate::ollama::{self, ChatMessage};
 use crate::personas;
 use crate::storage::StorageError;
@@ -18,6 +19,11 @@ pub struct StatusResponse {
     pub model_locked: bool,
     pub auth: &'static str,
     pub refiner_available: bool,
+    /// True when an img2img (image-edit) backend is wired up. Today
+    /// that's ComfyUI Kontext via COMFYUI_URL. The UI uses this to
+    /// surface an "img2img" indicator on attachment-bearing image turns,
+    /// since the picker model is bypassed in that branch.
+    pub img2img_available: bool,
 }
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -34,6 +40,7 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         model_locked: state.settings.ollama_model_lock.is_some(),
         auth,
         refiner_available: state.settings.prompt_refiner_model.is_some(),
+        img2img_available: state.settings.comfyui_url.is_some(),
     })
 }
 
@@ -204,6 +211,28 @@ pub async fn delete_message_from(
     }
 }
 
+/// Cancel a pending image generation. Used by the UI when the user clicks
+/// stop on a row whose original SSE connection isn't held by the current
+/// tab (e.g. after a reload). Posts `/interrupt` to ComfyUI and drops the
+/// placeholder row. The original SSE task — if still alive elsewhere —
+/// will see its Storage update no-op, then notice the prompt missing from
+/// `/history` and exit.
+pub async fn cancel_pending_message(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    path: web::Path<(String, i64)>,
+) -> HttpResponse {
+    let (conv_id, msg_id) = path.into_inner();
+    comfyui::interrupt_active(state.get_ref()).await;
+    match state
+        .storage
+        .delete_message_and_after(&user.sub, &conv_id, msg_id)
+    {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => storage_err(e),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ChatBody {
     pub conv_id: String,
@@ -228,6 +257,13 @@ pub struct ChatBody {
     /// `personas::list()`. Unknown / missing → default persona.
     #[serde(default)]
     pub persona: Option<String>,
+    /// Retry mode: when set, the backend deletes this assistant row
+    /// (assumed `status='error'` or stuck pending) and re-runs generation
+    /// off the existing latest user message instead of appending a new
+    /// user turn. Used by the in-bubble "retry" button so the original
+    /// user prompt + attached image stays in place.
+    #[serde(default)]
+    pub retry_assistant_id: Option<i64>,
 }
 
 pub async fn list_personas() -> HttpResponse {
@@ -246,13 +282,23 @@ pub async fn chat(
         .map_err(storage_actix_err)?;
 
     let images: Vec<String> = body.images.clone().unwrap_or_default();
-    state
-        .storage
-        .append_message(&user.sub, &conv.id, "user", &body.content, &images)
-        .map_err(storage_actix_err)?;
+    if let Some(retry_id) = body.retry_assistant_id {
+        // Drop the failed assistant row; the prior user message stays in
+        // place and becomes the prompt source for this turn. Title was
+        // set on the original send, no rename here.
+        state
+            .storage
+            .delete_message_and_after(&user.sub, &conv.id, retry_id)
+            .map_err(storage_actix_err)?;
+    } else {
+        state
+            .storage
+            .append_message(&user.sub, &conv.id, "user", &body.content, &images)
+            .map_err(storage_actix_err)?;
 
-    let title_seed = body.content.chars().take(60).collect::<String>();
-    let _ = state.storage.rename_if_default(&conv.id, title_seed.trim());
+        let title_seed = body.content.chars().take(60).collect::<String>();
+        let _ = state.storage.rename_if_default(&conv.id, title_seed.trim());
+    }
 
     let history = state
         .storage
@@ -326,24 +372,47 @@ pub async fn chat(
         // actually configured server-side.
         let refine_enabled = refiner_model.is_some() && body.refine.unwrap_or(true);
         let persona_system = personas::system_prompt(body.persona.as_deref());
+        // Route to ComfyUI Kontext when the user attached a reference
+        // image AND a ComfyUI host is configured. Otherwise fall back to
+        // the Ollama text→image path even with an attachment (Ollama will
+        // ignore it on a non-vision image model).
+        let kontext_input: Option<String> = state
+            .settings
+            .comfyui_url
+            .as_ref()
+            .and(body.images.as_ref().and_then(|v| v.first().cloned()));
+        let use_kontext = kontext_input.is_some();
         tokio::spawn(async move {
+            // VRAM coordination: Kontext FP8 (~12 GB) cannot share host
+            // memory with chat / refiner models on a 24 GB box. Tell
+            // Ollama to drop the chat model before invoking ComfyUI.
+            if use_kontext {
+                ollama::evict(&state_clone, &model_for_gen).await;
+            }
             let refined = if refine_enabled {
                 match refiner_model.as_deref() {
-                    Some(m) => match ollama::refine_image_prompt(
-                        state_clone.clone(),
-                        m,
-                        &persona_system,
-                        &refiner_history,
-                    )
-                    .await
-                    {
-                        Ok(r) if !r.is_empty() => Some(r),
-                        Ok(_) => None,
-                        Err(e) => {
-                            tracing::warn!("prompt refinement failed: {e} (using original)");
-                            None
+                    Some(m) => {
+                        let r = ollama::refine_image_prompt(
+                            state_clone.clone(),
+                            m,
+                            &persona_system,
+                            &refiner_history,
+                        )
+                        .await;
+                        if use_kontext {
+                            ollama::evict(&state_clone, m).await;
                         }
-                    },
+                        match r {
+                            Ok(r) if !r.is_empty() => Some(r),
+                            Ok(_) => None,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "prompt refinement failed: {e} (using original)"
+                                );
+                                None
+                            }
+                        }
+                    }
                     None => None,
                 }
             } else {
@@ -372,7 +441,48 @@ pub async fn chat(
             };
             let final_prompt = composed_prompt.as_str();
 
-            match ollama::generate_image(&state_clone, &model_for_gen, final_prompt).await {
+            // Wire cancellation: when the SSE client disconnects, the
+            // mpsc receiver drops and `tx.closed()` resolves. We feed
+            // that into ComfyUI's poll loop so we can stop wasting GPU
+            // cycles on a render no one is waiting for.
+            let cancel_tx = tx.clone();
+            let cancel_fut = async move {
+                cancel_tx.closed().await;
+            };
+            // Forward live progress + preview frames from ComfyUI's
+            // WebSocket onto the same SSE channel. `try_send` is fire-
+            // and-forget — preview frames are noisy and dropping a few
+            // when the client is slow is preferable to head-of-line
+            // blocking the actual generation result.
+            let progress_tx = tx.clone();
+            let progress_cb: comfyui::ProgressCallback = std::sync::Arc::new(
+                move |evt: comfyui::ProgressEvent| {
+                    let payload = match evt {
+                        comfyui::ProgressEvent::Progress { value, max } => ollama::sse_json(
+                            "progress",
+                            &serde_json::json!({"value": value, "max": max}),
+                        ),
+                        comfyui::ProgressEvent::Preview { mime, b64 } => ollama::sse_json(
+                            "preview",
+                            &serde_json::json!({"mime": mime, "b64": b64}),
+                        ),
+                    };
+                    let _ = progress_tx.try_send(Ok(payload));
+                },
+            );
+            let gen_result = if let Some(input_b64) = kontext_input.as_deref() {
+                comfyui::generate_kontext(
+                    &state_clone,
+                    final_prompt,
+                    input_b64,
+                    cancel_fut,
+                    Some(progress_cb),
+                )
+                .await
+            } else {
+                ollama::generate_image(&state_clone, &model_for_gen, final_prompt).await
+            };
+            match gen_result {
                 Ok(b64) => {
                     // Caption either holds the refined prompt (refine on) or
                     // a vision description of what was rendered (refine off
@@ -380,13 +490,23 @@ pub async fn chat(
                     let caption = if let Some(r) = refined {
                         r
                     } else if let Some(m) = refiner_model.as_deref() {
-                        match ollama::describe_image(state_clone.clone(), m, &b64).await {
+                        let d = match ollama::describe_image(
+                            state_clone.clone(),
+                            m,
+                            &b64,
+                        )
+                        .await
+                        {
                             Ok(d) => d,
                             Err(e) => {
                                 tracing::warn!("image description failed: {e}");
                                 String::new()
                             }
+                        };
+                        if use_kontext {
+                            ollama::evict(&state_clone, m).await;
                         }
+                        d
                     } else {
                         String::new()
                     };
@@ -403,6 +523,21 @@ pub async fn chat(
                             &serde_json::json!({"conv_id": conv_id}),
                         )))
                         .await;
+                }
+                Err(ollama::ChatStreamError::Cancelled) => {
+                    // Client went away (stop button, tab close, navigation).
+                    // Drop the placeholder row entirely so a retry doesn't
+                    // pile up half-finished bubbles. The ComfyUI worker has
+                    // already been told to interrupt inside generate_kontext.
+                    if let Err(e) = state_clone.storage.delete_message_and_after(
+                        &user_sub,
+                        &conv_id,
+                        pending_id,
+                    ) {
+                        tracing::warn!(
+                            "failed to drop cancelled pending row {pending_id}: {e}"
+                        );
+                    }
                 }
                 Err(e) => {
                     let public = friendly_image_error(&e);
@@ -530,6 +665,15 @@ fn friendly_image_error(e: &ollama::ChatStreamError) -> String {
             "image generator returned no data — the upstream runner likely \
              crashed. check ollama logs."
                 .to_string()
+        }
+        ollama::ChatStreamError::ComfyTimeout => {
+            "image edit timed out — the comfyui job didn't finish in time"
+                .to_string()
+        }
+        ollama::ChatStreamError::Cancelled => {
+            // Reachable only if the friendly path is invoked for a Cancelled
+            // result (it currently isn't — the handler short-circuits earlier).
+            "cancelled".to_string()
         }
         ollama::ChatStreamError::Http(err) => {
             if err.is_timeout() {

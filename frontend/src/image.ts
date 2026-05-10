@@ -1,4 +1,12 @@
-const MAX_EDGE = 1568;
+// Long-edge ceiling for vision-chat attachments — keeps enough detail for
+// multimodal models to read fine print / small UI elements.
+const MAX_EDGE_CHAT = 1568;
+// Long-edge ceiling for image-mode (Kontext img2img) attachments. The
+// backend workflow further downscales the input to ~0.59 MP (≈768²) before
+// VAE-encoding, so anything above ~1024 just bloats the wire payload
+// without affecting output quality. Leaves a small buffer above 768 so
+// non-square aspects don't get clipped twice.
+const MAX_EDGE_IMAGE = 1024;
 const JPEG_QUALITY = 0.82;
 
 export type ResizedImage = {
@@ -6,12 +14,18 @@ export type ResizedImage = {
   preview: string;
 };
 
-export async function resizeImageForUpload(file: File): Promise<ResizedImage> {
+export type ResizeMode = "chat" | "image";
+
+export async function resizeImageForUpload(
+  file: File,
+  mode: ResizeMode = "chat",
+): Promise<ResizedImage> {
   const bitmap = await createImageBitmap(file);
   try {
     const { width, height } = bitmap;
     const longEdge = Math.max(width, height);
-    const scale = longEdge > MAX_EDGE ? MAX_EDGE / longEdge : 1;
+    const maxEdge = mode === "image" ? MAX_EDGE_IMAGE : MAX_EDGE_CHAT;
+    const scale = longEdge > maxEdge ? maxEdge / longEdge : 1;
     const w = Math.max(1, Math.round(width * scale));
     const h = Math.max(1, Math.round(height * scale));
 

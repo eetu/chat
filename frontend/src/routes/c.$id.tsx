@@ -32,9 +32,26 @@ const ChatView = () => {
     loaded,
     send,
     stop,
+    cancelPending,
     deleteFrom,
     regenerate,
   } = useChat(id);
+
+  // A pending assistant row means an image generation is still churning —
+  // either in this tab's SSE channel (streaming === true) or kicked off
+  // earlier in another tab / pre-reload (streaming === false but the row
+  // is persisted server-side). We treat both as "busy" so the composer's
+  // stop button stays available, and route the stop action to the right
+  // handler: AbortController for live SSE, cancel API for the orphaned case.
+  const pendingMsg = messages.find((m) => m.status === "pending");
+  const busy = streaming || !!pendingMsg;
+  const onStopBusy = () => {
+    if (streaming) {
+      stop();
+    } else if (pendingMsg?.id != null) {
+      void cancelPending(pendingMsg.id);
+    }
+  };
 
   const { data: conversations } = useSWR<Conversation[]>(
     "/api/conversations",
@@ -247,7 +264,7 @@ const ChatView = () => {
               convId={id}
               onDeleteFrom={deleteFrom}
               onRegenerate={regenerate}
-              busy={streaming}
+              busy={busy}
             />
           ))}
           {error && (
@@ -305,8 +322,8 @@ const ChatView = () => {
       >
         <Composer
           onSend={sendWithModel}
-          streaming={streaming}
-          onStop={stop}
+          streaming={busy}
+          onStop={onStopBusy}
           history={userHistory}
           model={model}
           onModelChange={onModelChange}
@@ -314,6 +331,7 @@ const ChatView = () => {
           chatCap={caps?.chat ?? true}
           imageGen={caps?.image_gen ?? false}
           refinerAvailable={status?.refiner_available ?? false}
+          img2imgAvailable={status?.img2img_available ?? false}
           personas={personas}
         />
       </div>

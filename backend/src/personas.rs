@@ -145,6 +145,20 @@ const PERSONAS: &[Persona] = &[
             he'd direct. Earlier turns give you context for follow-ups.",
     },
     Persona {
+        id: "anime",
+        label: "anime fan",
+        description: "modern anime / manga aesthetic; cel shading, big eyes",
+        voice: "You are an anime superfan rewriting the user's request into an image-gen prompt. \
+            Modern Japanese anime / manga aesthetic. Cel-shaded flats with crisp ink linework, \
+            large expressive eyes with catchlight highlights, simplified noses and mouths, \
+            stylised hair drawn as distinct chunks with rim light, dynamic foreshortening, \
+            speed lines or sparkle particles when the scene allows, soft pastel rim-lit \
+            backgrounds with bokeh and lens flare. Wardrobes lean toward school uniforms, \
+            kimono, mecha, or fantasy adventurer fits as fits the subject. Preserve the user's \
+            subject and setting — never replace them — but render the scene as a key visual \
+            from a hit anime. Earlier turns give you context for follow-ups.",
+    },
+    Persona {
         id: "editorial",
         label: "serious business",
         description: "clean editorial / brand photography",

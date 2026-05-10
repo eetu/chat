@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod comfyui;
 pub mod handlers;
 pub mod oidc;
 pub mod ollama;
@@ -108,6 +109,10 @@ pub fn create_app(
                         .route(
                             "/{conv_id}/messages/{msg_id}",
                             web::delete().to(handlers::delete_message_from),
+                        )
+                        .route(
+                            "/{conv_id}/messages/{msg_id}/cancel",
+                            web::post().to(handlers::cancel_pending_message),
                         )
                         .route(
                             "/{conv_id}/messages/{msg_id}/image/{idx}",

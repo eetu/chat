@@ -11,6 +11,12 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
   images?: string[];
   image_count?: number;
   status?: "done" | "pending" | "error";
+  /** Live sampler progress while a ComfyUI img2img job is churning.
+   * Cleared once the job lands (status flips to done/error). */
+  progress?: { value: number; max: number };
+  /** Latest preview frame from ComfyUI (data URL). Same lifecycle as
+   * `progress` — only meaningful while `status === "pending"`. */
+  previewDataUrl?: string;
 };
 
 export function useChat(convId: string | undefined) {
@@ -61,25 +67,53 @@ export function useChat(convId: string | undefined) {
       mode?: "chat" | "image",
       refine?: boolean,
       persona?: string,
+      /** When set, drops the failed assistant row and re-runs generation
+       * off the existing user message — no new user bubble appears. */
+      retryAssistantId?: number,
     ) => {
       if (!convId || streaming) return;
       const controller = new AbortController();
       abortRef.current = controller;
+      let aborted = false;
       setStreaming(true);
       setError(null);
-      setMessages((prev) => [
-        ...prev,
-        { role: "user", content, images },
-        {
-          role: "assistant",
-          content: "",
-          status: mode === "image" ? "pending" : "done",
-        },
-      ]);
+      setMessages((prev) => {
+        if (retryAssistantId != null) {
+          // Reuse the existing user bubble; just replace the failed
+          // assistant row with a fresh pending placeholder.
+          const filtered = prev.filter((m) => m.id !== retryAssistantId);
+          return [
+            ...filtered,
+            {
+              role: "assistant",
+              content: "",
+              status: mode === "image" ? "pending" : "done",
+            },
+          ];
+        }
+        return [
+          ...prev,
+          { role: "user", content, images },
+          {
+            role: "assistant",
+            content: "",
+            status: mode === "image" ? "pending" : "done",
+          },
+        ];
+      });
 
       try {
         for await (const evt of streamChat(
-          { conv_id: convId, content, model, images, mode, refine, persona },
+          {
+            conv_id: convId,
+            content,
+            model,
+            images,
+            mode,
+            refine,
+            persona,
+            retry_assistant_id: retryAssistantId,
+          },
           controller.signal,
         )) {
           if (evt.type === "delta") {
@@ -90,6 +124,30 @@ export function useChat(convId: string | undefined) {
                 next[next.length - 1] = {
                   role: "assistant",
                   content: last.content + evt.content,
+                };
+              }
+              return next;
+            });
+          } else if (evt.type === "progress") {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = {
+                  ...last,
+                  progress: { value: evt.value, max: evt.max },
+                };
+              }
+              return next;
+            });
+          } else if (evt.type === "preview") {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = {
+                  ...last,
+                  previewDataUrl: `data:${evt.mime};base64,${evt.b64}`,
                 };
               }
               return next;
@@ -107,7 +165,9 @@ export function useChat(convId: string | undefined) {
         }
       } catch (e) {
         // AbortError is expected when the user presses stop — not a failure.
-        if (!(e instanceof DOMException && e.name === "AbortError")) {
+        if (e instanceof DOMException && e.name === "AbortError") {
+          aborted = true;
+        } else {
           setError(String(e));
         }
       } finally {
@@ -116,10 +176,25 @@ export function useChat(convId: string | undefined) {
         await mutate("/api/conversations");
         // Refresh thread from the server: backend persists whatever was
         // streamed (even on stop), so the canonical version replaces the
-        // optimistic in-memory one.
-        if (convId) {
+        // optimistic in-memory one. The persisted error row (image-mode
+        // failures hit `fail_message`) carries the same text we already
+        // wrote into top-level `error` from the SSE `error` event — clear
+        // the transient state so we don't render the message twice.
+        //
+        // On abort we skip the immediate fetch: the backend cancel chain
+        // (interrupt comfyui + delete pending row) runs async and can
+        // take a few seconds, so a fetch right now would re-hydrate the
+        // pending row we just optimistically removed in `stop`. The
+        // pending-row poll effect picks up any leftover state if the
+        // backend ever fails to clean up.
+        if (convId && !aborted) {
           api.getMessages(convId).then(
-            (rows) => setMessages(rows),
+            (rows) => {
+              setMessages(rows);
+              if (rows.some((r) => r.status === "error")) {
+                setError(null);
+              }
+            },
             () => {},
           );
         }
@@ -130,7 +205,40 @@ export function useChat(convId: string | undefined) {
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
+    // Drop the placeholder bubble immediately. The backend cancel chain
+    // (interrupt comfyui + delete pending row) is in flight; deleting
+    // optimistically here means the UI isn't stuck behind that latency.
+    setMessages((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1];
+      if (last.role === "assistant" && last.status === "pending") {
+        return prev.slice(0, -1);
+      }
+      return prev;
+    });
   }, []);
+
+  /**
+   * Cancel an in-flight image generation whose original SSE connection is
+   * not held by this tab. Used after a reload (or when the user opens the
+   * conversation in a second tab) where `streaming` is false but a
+   * `pending` row is still present. Posts to the server's cancel endpoint
+   * which interrupts ComfyUI and drops the placeholder row, then refreshes
+   * the local thread.
+   */
+  const cancelPending = useCallback(
+    async (messageId: number) => {
+      if (!convId) return;
+      try {
+        await api.cancelPending(convId, messageId);
+        const rows = await api.getMessages(convId);
+        setMessages(rows);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [convId],
+  );
 
   const deleteFrom = useCallback(
     async (messageId: number) => {
@@ -164,27 +272,35 @@ export function useChat(convId: string | undefined) {
       const target = messages[idx];
       const targetImageCount =
         (target.image_count ?? 0) + (target.images?.length ?? 0);
+      // Error rows only ever come from the image branch (chat-mode
+      // failures aren't persisted), so retry them as image regardless of
+      // attachment count. For done rows, presence of images is the tell.
       const inferredMode: "chat" | "image" =
-        targetImageCount > 0 ? "image" : "chat";
-      try {
-        await api.deleteMessageFrom(convId, assistantId);
-        const rows = await api.getMessages(convId);
-        setMessages(rows);
-      } catch (e) {
-        setError(String(e));
-        return;
-      }
-      await send(prior.content, undefined, prior.images, inferredMode);
+        target.status === "error" || targetImageCount > 0 ? "image" : "chat";
+      // Backend deletes the failed assistant row inside the same /api/chat
+      // request; no client-side delete + re-fetch round trip needed, and
+      // no second user bubble appears.
+      await send(
+        prior.content,
+        undefined,
+        prior.images,
+        inferredMode,
+        undefined,
+        undefined,
+        assistantId,
+      );
     },
     [convId, messages, send, streaming],
   );
 
   // Poll while any message is still pending (e.g. an image generation
-  // started in another tab or before a reload). Stops as soon as the
-  // refreshed list has no pending rows.
+  // started in another tab or before a reload). Skipped while a live SSE
+  // stream is running — that path drives state via deltas + progress +
+  // preview events, and overwriting it with bare server rows every 4 s
+  // wipes the SSE-only fields (`progress`, `previewDataUrl`).
   const hasPending = messages.some((m) => m.status === "pending");
   useEffect(() => {
-    if (!convId || !hasPending) return;
+    if (!convId || !hasPending || streaming) return;
     let cancelled = false;
     const tick = async () => {
       try {
@@ -200,7 +316,7 @@ export function useChat(convId: string | undefined) {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [convId, hasPending]);
+  }, [convId, hasPending, streaming]);
 
   return {
     messages,
@@ -209,6 +325,7 @@ export function useChat(convId: string | undefined) {
     loaded,
     send,
     stop,
+    cancelPending,
     deleteFrom,
     regenerate,
   };

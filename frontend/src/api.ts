@@ -36,6 +36,7 @@ export type Status = {
   model_locked: boolean;
   auth: "dev" | "oidc" | "none";
   refiner_available: boolean;
+  img2img_available: boolean;
 };
 
 export type Persona = {
@@ -90,6 +91,13 @@ export const api = {
     }).then((r) => {
       if (!r.ok) throw new Error(`${r.status}`);
     }),
+  cancelPending: (convId: string, msgId: number) =>
+    fetch(`/api/conversations/${convId}/messages/${msgId}/cancel`, {
+      method: "POST",
+      credentials: "include",
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+    }),
   modelCaps: (model: string) =>
     fetch(`/api/models/caps?model=${encodeURIComponent(model)}`, {
       credentials: "include",
@@ -99,7 +107,9 @@ export const api = {
 export type ChatStreamEvent =
   | { type: "delta"; content: string }
   | { type: "done"; conv_id: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "progress"; value: number; max: number }
+  | { type: "preview"; mime: string; b64: string };
 
 /**
  * POST /api/chat and parse the SSE response stream produced by actix-web-lab.
@@ -114,6 +124,10 @@ export async function* streamChat(
     mode?: "chat" | "image";
     refine?: boolean;
     persona?: string;
+    /** When set, the backend deletes this assistant row and re-runs
+     * generation off the existing user turn instead of appending a new
+     * one. Used by the in-bubble retry button. */
+    retry_assistant_id?: number;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
@@ -182,6 +196,22 @@ function parseFrame(frame: string): ChatStreamEvent | null {
       return { type: "error", message: parsed.message };
     } catch {
       return { type: "error", message: data };
+    }
+  }
+  if (event === "progress") {
+    try {
+      const parsed = JSON.parse(data) as { value: number; max: number };
+      return { type: "progress", value: parsed.value, max: parsed.max };
+    } catch {
+      return null;
+    }
+  }
+  if (event === "preview") {
+    try {
+      const parsed = JSON.parse(data) as { mime: string; b64: string };
+      return { type: "preview", mime: parsed.mime, b64: parsed.b64 };
+    } catch {
+      return null;
     }
   }
   return null;
