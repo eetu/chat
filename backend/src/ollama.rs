@@ -38,6 +38,28 @@ struct OllamaChunk {
     done: bool,
     #[serde(default)]
     done_reason: Option<String>,
+    /// Tokens generated for this turn. Present on the terminal chunk
+    /// only.
+    #[serde(default)]
+    eval_count: Option<u32>,
+    /// Generation wall-clock time, in nanoseconds. Used together with
+    /// `eval_count` to compute tokens/sec.
+    #[serde(default)]
+    eval_duration: Option<u64>,
+    /// Prompt-side token count. Surfaced in the UI so the user has some
+    /// sense of context size.
+    #[serde(default)]
+    prompt_eval_count: Option<u32>,
+}
+
+/// Generation stats from Ollama's final NDJSON chunk. Forwarded as a
+/// `stats` SSE event so the UI can render tokens + tokens/sec under the
+/// assistant bubble.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChatStats {
+    pub tokens: u32,
+    pub prompt_tokens: u32,
+    pub tokens_per_sec: f32,
 }
 
 pub async fn list_models(state: &AppState) -> Result<serde_json::Value, reqwest::Error> {
@@ -346,6 +368,9 @@ pub struct StreamOutcome {
     /// disconnected, the user pressed stop, or the upstream stream ended
     /// without a terminal chunk.
     pub completed: bool,
+    /// Generation stats, only populated on a clean `done: true` final
+    /// chunk. None for aborted streams.
+    pub stats: Option<ChatStats>,
 }
 
 /// Stream a chat completion. `on_delta` is called for each non-empty content
@@ -399,17 +424,33 @@ where
                 if !msg.content.is_empty() {
                     full.push_str(&msg.content);
                     if !on_delta(&msg.content) {
-                        return Ok(StreamOutcome { content: full, completed: false });
+                        return Ok(StreamOutcome {
+                            content: full,
+                            completed: false,
+                            stats: None,
+                        });
                     }
                 }
             }
             if parsed.done {
                 tracing::debug!(reason = ?parsed.done_reason, "ollama chunk done");
-                return Ok(StreamOutcome { content: full, completed: true });
+                let stats = match (parsed.eval_count, parsed.eval_duration) {
+                    (Some(tokens), Some(ns)) if ns > 0 => Some(ChatStats {
+                        tokens,
+                        prompt_tokens: parsed.prompt_eval_count.unwrap_or(0),
+                        tokens_per_sec: (tokens as f64 * 1.0e9 / ns as f64) as f32,
+                    }),
+                    _ => None,
+                };
+                return Ok(StreamOutcome { content: full, completed: true, stats });
             }
         }
     }
-    Ok(StreamOutcome { content: full, completed: false })
+    Ok(StreamOutcome {
+        content: full,
+        completed: false,
+        stats: None,
+    })
 }
 
 #[derive(thiserror::Error, Debug)]

@@ -606,10 +606,21 @@ pub async fn chat(
 
     tokio::spawn(async move {
         let tx_for_delta = tx.clone();
-        let result = ollama::stream_chat(state_clone.clone(), &model, messages, |delta| {
-            tx_for_delta.try_send(Ok(ollama::sse_delta(delta))).is_ok()
-        })
-        .await;
+        // Race the upstream stream against `tx.closed()` so a client that
+        // disconnects (stop button, navigation, tab close) tears down the
+        // reqwest stream immediately. Without this, Ollama keeps generating
+        // until the next chunk write hits a broken pipe — which can be a
+        // multi-second hold on bigger models.
+        let tx_closed = tx.clone();
+        let result = tokio::select! {
+            r = ollama::stream_chat(state_clone.clone(), &model, messages, |delta| {
+                tx_for_delta.try_send(Ok(ollama::sse_delta(delta))).is_ok()
+            }) => r,
+            _ = tx_closed.closed() => {
+                tracing::info!("chat SSE client gone — dropping upstream stream");
+                return;
+            }
+        };
 
         match result {
             Ok(outcome) => {
@@ -625,6 +636,18 @@ pub async fn chat(
                     }
                 }
                 if outcome.completed {
+                    if let Some(stats) = outcome.stats {
+                        let _ = tx
+                            .send(Ok(ollama::sse_json(
+                                "stats",
+                                &serde_json::json!({
+                                    "tokens": stats.tokens,
+                                    "prompt_tokens": stats.prompt_tokens,
+                                    "tokens_per_sec": stats.tokens_per_sec,
+                                }),
+                            )))
+                            .await;
+                    }
                     let _ = tx
                         .send(Ok(ollama::sse_json(
                             "done",
