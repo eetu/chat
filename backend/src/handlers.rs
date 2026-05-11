@@ -375,16 +375,20 @@ pub async fn chat(
         // actually configured server-side.
         let refine_enabled = refiner_model.is_some() && body.refine.unwrap_or(true);
         let persona_system = personas::system_prompt(body.persona.as_deref());
-        // Route to ComfyUI Kontext when the user attached a reference
-        // image AND a ComfyUI host is configured. Otherwise fall back to
-        // the Ollama text→image path even with an attachment (Ollama will
-        // ignore it on a non-vision image model).
-        let kontext_input: Option<String> = state
-            .settings
-            .comfyui_url
-            .as_ref()
-            .and(body.images.as_ref().and_then(|v| v.first().cloned()));
-        let use_kontext = kontext_input.is_some();
+        // Route to ComfyUI Kontext when the user attached one or more
+        // reference images AND a ComfyUI host is configured. Otherwise
+        // fall back to the Ollama text→image path even with an
+        // attachment (Ollama will ignore it on a non-vision image
+        // model). Multiple attachments stack as additional Kontext
+        // references via chained ReferenceLatent nodes.
+        let kontext_inputs: Vec<String> = match (
+            state.settings.comfyui_url.as_ref(),
+            body.images.as_ref(),
+        ) {
+            (Some(_), Some(v)) if !v.is_empty() => v.clone(),
+            _ => Vec::new(),
+        };
+        let use_kontext = !kontext_inputs.is_empty();
         let image_sem = state.image_sem.clone();
         tokio::spawn(async move {
             // Hold a permit for the duration of this image job. With the
@@ -505,11 +509,11 @@ pub async fn chat(
                     let _ = progress_tx.try_send(Ok(payload));
                 },
             );
-            let gen_result = if let Some(input_b64) = kontext_input.as_deref() {
+            let gen_result = if !kontext_inputs.is_empty() {
                 comfyui::generate_kontext(
                     &state_clone,
                     final_prompt,
-                    input_b64,
+                    &kontext_inputs,
                     cancel_fut,
                     Some(progress_cb),
                 )

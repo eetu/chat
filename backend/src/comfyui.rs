@@ -54,55 +54,155 @@ const SAVE_NODE_ID: &str = "9";
 const POLL_TIMEOUT: Duration = Duration::from_secs(1800);
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Flux Kontext img2img workflow. Placeholders: `{prompt}` (JSON-escaped
-/// already at substitution time), `{filename}` (uploaded reference image
-/// name returned by `/upload/image`), `{seed}` (non-negative u64 as
-/// stringified integer).
-const WORKFLOW_TEMPLATE: &str = r##"{
-  "3": {
-    "class_type": "KSampler",
-    "inputs": {
-      "seed": {seed}, "steps": 8, "cfg": 1.0,
-      "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0,
-      "model": ["60", 0], "positive": ["35", 0],
-      "negative": ["135", 0], "latent_image": ["124", 0]
+/// Build a Flux Kontext workflow for one or more reference images.
+///
+/// Each image gets its own `LoadImage` → `ImageScaleToTotalPixels` →
+/// `VAEEncode` pipeline. `ReferenceLatent` nodes are chained so every
+/// encoded latent feeds the conditioning that ultimately drives Flux
+/// Guidance — this is how Kontext composes multiple reference inputs.
+/// The first image's encoded latent doubles as `KSampler.latent_image`
+/// (Kontext's denoising target), matching the upstream single-image
+/// graph.
+fn build_workflow(prompt: &str, filenames: &[String], seed: u64) -> serde_json::Value {
+    use serde_json::json;
+    let mut wf = serde_json::Map::new();
+
+    // Model loaders + text encoder are shared across all branches.
+    wf.insert(
+        "31".into(),
+        json!({
+            "class_type": "UnetLoaderGGUF",
+            "inputs": { "unet_name": "flux1-kontext-dev-Q6_K.gguf" }
+        }),
+    );
+    wf.insert(
+        "60".into(),
+        json!({
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {
+                "model": ["31", 0],
+                "lora_name": "Hyper-FLUX.1-dev-8steps-lora.safetensors",
+                "strength_model": 0.125
+            }
+        }),
+    );
+    wf.insert(
+        "38".into(),
+        json!({
+            "class_type": "DualCLIPLoaderGGUF",
+            "inputs": {
+                "clip_name1": "clip_l.safetensors",
+                "clip_name2": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+                "type": "flux"
+            }
+        }),
+    );
+    wf.insert(
+        "39".into(),
+        json!({ "class_type": "VAELoader", "inputs": { "vae_name": "ae.safetensors" } }),
+    );
+    wf.insert(
+        "6".into(),
+        json!({
+            "class_type": "CLIPTextEncode",
+            "inputs": { "text": prompt, "clip": ["38", 0] }
+        }),
+    );
+    wf.insert(
+        "135".into(),
+        json!({
+            "class_type": "ConditioningZeroOut",
+            "inputs": { "conditioning": ["6", 0] }
+        }),
+    );
+
+    // Per-image: load, downscale, VAE-encode, then chain a ReferenceLatent.
+    let mut prev_conditioning = "6".to_string();
+    for (i, filename) in filenames.iter().enumerate() {
+        let load_id = format!("42_{i}");
+        let scale_id = format!("50_{i}");
+        let encode_id = format!("124_{i}");
+        let ref_id = format!("177_{i}");
+        wf.insert(
+            load_id.clone(),
+            json!({
+                "class_type": "LoadImage",
+                "inputs": { "image": filename }
+            }),
+        );
+        wf.insert(
+            scale_id.clone(),
+            json!({
+                "class_type": "ImageScaleToTotalPixels",
+                "inputs": {
+                    "image": [load_id, 0],
+                    "upscale_method": "lanczos",
+                    "megapixels": 0.59,
+                    "resolution_steps": 64
+                }
+            }),
+        );
+        wf.insert(
+            encode_id.clone(),
+            json!({
+                "class_type": "VAEEncode",
+                "inputs": { "pixels": [scale_id, 0], "vae": ["39", 0] }
+            }),
+        );
+        wf.insert(
+            ref_id.clone(),
+            json!({
+                "class_type": "ReferenceLatent",
+                "inputs": { "conditioning": [prev_conditioning, 0], "latent": [encode_id, 0] }
+            }),
+        );
+        prev_conditioning = ref_id;
     }
-  },
-  "8":   { "class_type": "VAEDecode",
-           "inputs": { "samples": ["3", 0], "vae": ["39", 0] } },
-  "9":   { "class_type": "SaveImage",
-           "inputs": { "filename_prefix": "chat_kontext",
-                       "images": ["8", 0] } },
-  "31":  { "class_type": "UnetLoaderGGUF",
-           "inputs": { "unet_name": "flux1-kontext-dev-Q6_K.gguf" } },
-  "60":  { "class_type": "LoraLoaderModelOnly",
-           "inputs": { "model": ["31", 0],
-                       "lora_name": "Hyper-FLUX.1-dev-8steps-lora.safetensors",
-                       "strength_model": 0.125 } },
-  "38":  { "class_type": "DualCLIPLoaderGGUF",
-           "inputs": { "clip_name1": "clip_l.safetensors",
-                       "clip_name2": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
-                       "type": "flux" } },
-  "39":  { "class_type": "VAELoader",
-           "inputs": { "vae_name": "ae.safetensors" } },
-  "42":  { "class_type": "LoadImage",
-           "inputs": { "image": "{filename}" } },
-  "50":  { "class_type": "ImageScaleToTotalPixels",
-           "inputs": { "image": ["42", 0],
-                       "upscale_method": "lanczos",
-                       "megapixels": 0.59,
-                       "resolution_steps": 64 } },
-  "6":   { "class_type": "CLIPTextEncode",
-           "inputs": { "text": "{prompt}", "clip": ["38", 0] } },
-  "35":  { "class_type": "FluxGuidance",
-           "inputs": { "guidance": 2.5, "conditioning": ["177", 0] } },
-  "177": { "class_type": "ReferenceLatent",
-           "inputs": { "conditioning": ["6", 0], "latent": ["124", 0] } },
-  "124": { "class_type": "VAEEncode",
-           "inputs": { "pixels": ["50", 0], "vae": ["39", 0] } },
-  "135": { "class_type": "ConditioningZeroOut",
-           "inputs": { "conditioning": ["6", 0] } }
-}"##;
+
+    wf.insert(
+        "35".into(),
+        json!({
+            "class_type": "FluxGuidance",
+            "inputs": { "guidance": 2.5, "conditioning": [prev_conditioning, 0] }
+        }),
+    );
+
+    // First image's encoded latent is the denoising target.
+    wf.insert(
+        "3".into(),
+        json!({
+            "class_type": "KSampler",
+            "inputs": {
+                "seed": seed,
+                "steps": 8,
+                "cfg": 1.0,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+                "model": ["60", 0],
+                "positive": ["35", 0],
+                "negative": ["135", 0],
+                "latent_image": ["124_0", 0]
+            }
+        }),
+    );
+    wf.insert(
+        "8".into(),
+        json!({
+            "class_type": "VAEDecode",
+            "inputs": { "samples": ["3", 0], "vae": ["39", 0] }
+        }),
+    );
+    wf.insert(
+        SAVE_NODE_ID.into(),
+        json!({
+            "class_type": "SaveImage",
+            "inputs": { "filename_prefix": "chat_kontext", "images": ["8", 0] }
+        }),
+    );
+
+    serde_json::Value::Object(wf)
+}
 
 #[derive(Debug, Deserialize)]
 struct UploadResponse {
@@ -116,24 +216,29 @@ struct PromptResponse {
 
 /// Run a Flux Kontext img2img job.
 ///
-/// `prompt` is the natural-language edit instruction. `input_image_b64` is
-/// the user's reference image (no `data:` prefix). `cancel` resolves when
-/// the caller wants the job aborted (typically `mpsc::Sender::closed()`
-/// firing because the SSE client went away). Returns the rendered PNG as
-/// base64 — same shape as `ollama::generate_image` so the calling branch
-/// can persist it via `Storage::complete_message` without further
-/// branching. On cancellation we best-effort POST `/interrupt` and remove
-/// the prompt from the queue before returning `ChatStreamError::Cancelled`.
+/// `prompt` is the natural-language edit instruction. `input_images_b64`
+/// is one or more user reference images (no `data:` prefix); when more
+/// than one is supplied they're chained as additional Kontext references.
+/// `cancel` resolves when the caller wants the job aborted (typically
+/// `mpsc::Sender::closed()` firing because the SSE client went away).
+/// Returns the rendered PNG as base64 — same shape as
+/// `ollama::generate_image` so the calling branch can persist it via
+/// `Storage::complete_message` without further branching. On
+/// cancellation we best-effort POST `/interrupt` and remove the prompt
+/// from the queue before returning `ChatStreamError::Cancelled`.
 pub async fn generate_kontext<F>(
     state: &AppState,
     prompt: &str,
-    input_image_b64: &str,
+    input_images_b64: &[String],
     cancel: F,
     on_progress: Option<ProgressCallback>,
 ) -> Result<String, ChatStreamError>
 where
     F: std::future::Future<Output = ()>,
 {
+    if input_images_b64.is_empty() {
+        return Err(ChatStreamError::EmptyImage);
+    }
     let base = state
         .settings
         .comfyui_url
@@ -143,56 +248,48 @@ where
         .to_string();
     let client_id = Uuid::new_v4().to_string();
 
-    // 1. Upload reference image. The MIME comes from sniffing the bytes
-    // themselves — frontend currently sends JPEG, earlier paths sent PNG,
-    // and accepting either keeps ComfyUI's LoadImage node happy without
-    // a hidden re-encode.
-    let bytes = STANDARD.decode(input_image_b64).map_err(|e| {
-        tracing::warn!("base64 decode of user image failed: {e}");
-        ChatStreamError::EmptyImage
-    })?;
-    let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
-        tracing::warn!("rejecting unsupported image format for kontext upload");
-        ChatStreamError::EmptyImage
-    })?;
-    let ext = crate::image_kind::extension(mime);
-    let upload_filename = format!("chat-{}.{ext}", Uuid::new_v4());
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(upload_filename.clone())
-        .mime_str(mime)
-        .map_err(ChatStreamError::Http)?;
-    let form = reqwest::multipart::Form::new()
-        .text("overwrite", "true")
-        .text("subfolder", "chat")
-        .part("image", part);
-    let upload: UploadResponse = state
-        .http_client
-        .post(format!("{base}/upload/image"))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(ChatStreamError::Http)?
-        .error_for_status()
-        .map_err(ChatStreamError::Http)?
-        .json()
-        .await
-        .map_err(ChatStreamError::Http)?;
+    // 1. Upload each reference image and remember its server-side name.
+    // MIME is sniffed from each blob so the multipart Content-Type and
+    // filename extension match the bytes, otherwise ComfyUI's LoadImage
+    // node rejects the file.
+    let mut filenames: Vec<String> = Vec::with_capacity(input_images_b64.len());
+    for (i, b64) in input_images_b64.iter().enumerate() {
+        let bytes = STANDARD.decode(b64).map_err(|e| {
+            tracing::warn!("base64 decode of user image #{i} failed: {e}");
+            ChatStreamError::EmptyImage
+        })?;
+        let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
+            tracing::warn!("rejecting unsupported image format for kontext upload (#{i})");
+            ChatStreamError::EmptyImage
+        })?;
+        let ext = crate::image_kind::extension(mime);
+        let upload_filename = format!("chat-{}.{ext}", Uuid::new_v4());
+        let part = reqwest::multipart::Part::bytes(bytes)
+            .file_name(upload_filename)
+            .mime_str(mime)
+            .map_err(ChatStreamError::Http)?;
+        let form = reqwest::multipart::Form::new()
+            .text("overwrite", "true")
+            .text("subfolder", "chat")
+            .part("image", part);
+        let upload: UploadResponse = state
+            .http_client
+            .post(format!("{base}/upload/image"))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(ChatStreamError::Http)?
+            .error_for_status()
+            .map_err(ChatStreamError::Http)?
+            .json()
+            .await
+            .map_err(ChatStreamError::Http)?;
+        filenames.push(format!("chat/{}", upload.name));
+    }
 
-    // 2. Build workflow + queue prompt. The uploaded subfolder is
-    // included in the LoadImage filename per ComfyUI convention
-    // (`subfolder/name`).
-    let load_name = format!("chat/{}", upload.name);
+    // 2. Build workflow + queue prompt.
     let seed: u64 = (Uuid::new_v4().as_u128() as u64) & 0x7fff_ffff_ffff_ffff;
-    let prompt_escaped = json_escape(prompt);
-    let load_escaped = json_escape(&load_name);
-    let workflow_str = WORKFLOW_TEMPLATE
-        .replace("{prompt}", &prompt_escaped)
-        .replace("{filename}", &load_escaped)
-        .replace("{seed}", &seed.to_string());
-    let workflow: serde_json::Value = serde_json::from_str(&workflow_str).map_err(|e| {
-        tracing::error!("malformed kontext workflow after substitution: {e}");
-        ChatStreamError::EmptyImage
-    })?;
+    let workflow = build_workflow(prompt, &filenames, seed);
 
     let queued: PromptResponse = state
         .http_client
@@ -325,12 +422,6 @@ where
         return Err(ChatStreamError::EmptyImage);
     }
     Ok(STANDARD.encode(&view))
-}
-
-fn json_escape(s: &str) -> String {
-    let v = serde_json::Value::String(s.to_string()).to_string();
-    // Strip the surrounding quotes serde_json adds.
-    v[1..v.len() - 1].to_string()
 }
 
 /// Drop guard for the WS watcher task. Fires on every return path of
