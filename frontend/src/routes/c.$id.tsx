@@ -310,18 +310,35 @@ const ChatView = () => {
         }}
       >
         <div css={{ maxWidth: 760, margin: "0 auto" }}>
-          {messages.map((m, i) => (
-            <MessageView
-              key={m.id ?? `optimistic-${i}`}
-              msg={m}
-              convId={id}
-              onDeleteFrom={deleteFrom}
-              onRegenerate={regenerate}
-              onRemix={status?.img2img_available ? onRemix : undefined}
-              onEdit={onEdit}
-              busy={busy}
-            />
-          ))}
+          {messages.map((m, i) => {
+            // Pair each assistant row with its driving user turn so the
+            // TTS voice picker has the strongest available language
+            // signal (users typically write in their target language;
+            // an assistant reply may switch).
+            let priorUserContent: string | undefined;
+            if (m.role === "assistant") {
+              for (let j = i - 1; j >= 0; j--) {
+                if (messages[j].role === "user") {
+                  priorUserContent = messages[j].content;
+                  break;
+                }
+              }
+            }
+            return (
+              <MessageView
+                key={m.id ?? `optimistic-${i}`}
+                msg={m}
+                convId={id}
+                onDeleteFrom={deleteFrom}
+                onRegenerate={regenerate}
+                onRemix={status?.img2img_available ? onRemix : undefined}
+                onEdit={onEdit}
+                ttsAvailable={status?.voice_out_available ?? false}
+                priorUserContent={priorUserContent}
+                busy={busy}
+              />
+            );
+          })}
           {error && (
             <div
               css={{
@@ -388,6 +405,7 @@ const ChatView = () => {
           imageGen={caps?.image_gen ?? false}
           refinerAvailable={status?.refiner_available ?? false}
           img2imgAvailable={status?.img2img_available ?? false}
+          voiceInAvailable={status?.voice_in_available ?? false}
           personas={personas}
         />
       </div>

@@ -37,6 +37,8 @@ export type Status = {
   auth: "dev" | "oidc" | "none";
   refiner_available: boolean;
   img2img_available: boolean;
+  voice_in_available: boolean;
+  voice_out_available: boolean;
 };
 
 export type Persona = {
@@ -113,6 +115,10 @@ export const api = {
     fetch(`/api/models/caps?model=${encodeURIComponent(model)}`, {
       credentials: "include",
     }).then(json<ModelCapabilities>),
+  voices: () =>
+    fetch("/api/voices", { credentials: "include" }).then(
+      json<{ voices?: Array<string | { name?: string; voice?: string }> }>,
+    ),
 };
 
 export type ChatStreamEvent =

@@ -15,6 +15,13 @@ pub struct Settings {
     /// mode falls back to Ollama's `/v1/images/generations` even if the
     /// user attached an input image.
     pub comfyui_url: Option<String>,
+    /// whisper.cpp HTTP server base URL (`/inference` endpoint). Drives
+    /// the voice-input mic in the composer. When unset, the UI hides
+    /// the affordance.
+    pub whisper_url: Option<String>,
+    /// piper-tts HTTP server base URL (`POST /`). Drives the "read
+    /// aloud" affordance on assistant messages.
+    pub piper_url: Option<String>,
     pub chat_ttl_days: u32,
     pub session_key_hex: String,
     pub oidc: Option<OidcSettings>,
@@ -48,6 +55,8 @@ impl Settings {
         let prompt_refiner_model =
             env::var("PROMPT_REFINER_MODEL").ok().filter(|s| !s.is_empty());
         let comfyui_url = env::var("COMFYUI_URL").ok().filter(|s| !s.is_empty());
+        let whisper_url = env::var("WHISPER_URL").ok().filter(|s| !s.is_empty());
+        let piper_url = env::var("PIPER_URL").ok().filter(|s| !s.is_empty());
         let chat_ttl_days = env::var("CHAT_TTL_DAYS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -91,6 +100,8 @@ impl Settings {
             ollama_model_lock,
             prompt_refiner_model,
             comfyui_url,
+            whisper_url,
+            piper_url,
             chat_ttl_days,
             session_key_hex,
             oidc,
@@ -110,6 +121,8 @@ impl Settings {
             ollama_model_lock: None,
             prompt_refiner_model: None,
             comfyui_url: None,
+            whisper_url: None,
+            piper_url: None,
             chat_ttl_days: 30,
             session_key_hex: "0".repeat(128),
             oidc: None,

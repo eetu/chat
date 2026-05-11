@@ -1,16 +1,19 @@
 /* eslint-disable react-refresh/only-export-components */
 import { Theme, useTheme } from "@emotion/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 
-import { api, Me } from "../api";
+import { api, Me, Status } from "../api";
 import { mq } from "../mq";
+import { normalizeVoices, readVoiceOverride, writeVoiceOverride } from "../tts";
 
 const SettingsView = () => {
   const theme = useTheme();
   const navigate = useNavigate();
   const { data: me } = useSWR<Me>("/api/me", api.me);
+  const { data: status } = useSWR<Status>("/status", api.status);
+  const ttsAvailable = status?.voice_out_available ?? false;
 
   return (
     <div
@@ -74,8 +77,74 @@ const SettingsView = () => {
         </div>
 
         {me && <AccountSection me={me} theme={theme} />}
+        {ttsAvailable && <VoiceSection theme={theme} />}
       </div>
     </div>
+  );
+};
+
+const VoiceSection = ({ theme }: { theme: Theme }) => {
+  const { data } = useSWR("/api/voices", api.voices);
+  const voices = useMemo(() => normalizeVoices(data), [data]);
+  const [override, setOverride] = useState<string>(
+    () => readVoiceOverride() ?? "auto",
+  );
+  const onChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    setOverride(v);
+    writeVoiceOverride(v);
+  };
+  return (
+    <section css={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <h2
+        css={{
+          ...theme.typography.h3,
+          color: theme.colors.text.main,
+          margin: 0,
+        }}
+      >
+        voice
+      </h2>
+      <Row
+        label="read-aloud voice"
+        detail={
+          <span
+            css={{
+              ...theme.typography.body2,
+              color: theme.colors.text.muted,
+            }}
+          >
+            auto picks english / finnish based on the message; override here to
+            force a specific voice.
+          </span>
+        }
+        theme={theme}
+      >
+        <select
+          value={override}
+          onChange={onChange}
+          css={{
+            ...theme.typography.body2,
+            padding: "5px 8px",
+            borderRadius: 4,
+            border: `1px solid ${theme.colors.border}`,
+            background: theme.colors.background.main,
+            color: theme.colors.text.main,
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          <option value="auto">auto-detect</option>
+          {voices.map((v) => (
+            <option key={v.slug} value={v.slug}>
+              {v.nameNative === v.nameEnglish
+                ? `${v.nameNative} · ${v.slug}`
+                : `${v.nameNative} (${v.nameEnglish}) · ${v.slug}`}
+            </option>
+          ))}
+        </select>
+      </Row>
+    </section>
   );
 };
 

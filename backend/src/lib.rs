@@ -166,7 +166,18 @@ pub fn create_app(
                     web::resource("/chat")
                         .app_data(web::JsonConfig::default().limit(3 * 1024 * 1024))
                         .route(web::post().to(handlers::chat)),
-                ),
+                )
+                .service(
+                    // Audio uploads can exceed the default 256kB body cap
+                    // — a one-minute opus clip lands around 200–600 kB,
+                    // longer clips need more headroom. 16 MB matches the
+                    // browser's typical MediaRecorder budget for a few
+                    // minutes of dictation.
+                    web::resource("/transcribe")
+                        .app_data(web::PayloadConfig::new(16 * 1024 * 1024))
+                        .route(web::post().to(handlers::transcribe)),
+                )
+                .route("/tts", web::post().to(handlers::tts)),
         )
         .service({
             let index_path = format!("{static_dir}/index.html");

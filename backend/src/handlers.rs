@@ -24,6 +24,12 @@ pub struct StatusResponse {
     /// surface an "img2img" indicator on attachment-bearing image turns,
     /// since the picker model is bypassed in that branch.
     pub img2img_available: bool,
+    /// True when WHISPER_URL is set so the UI can show the mic button
+    /// for voice-to-text input. Backend forwards audio to whisper.cpp.
+    pub voice_in_available: bool,
+    /// True when PIPER_URL is set so the UI can show the read-aloud
+    /// affordance on assistant messages.
+    pub voice_out_available: bool,
 }
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -41,6 +47,8 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         auth,
         refiner_available: state.settings.prompt_refiner_model.is_some(),
         img2img_available: state.settings.comfyui_url.is_some(),
+        voice_in_available: state.settings.whisper_url.is_some(),
+        voice_out_available: state.settings.piper_url.is_some(),
     })
 }
 
@@ -305,6 +313,216 @@ pub struct ChatBody {
 
 pub async fn list_personas() -> HttpResponse {
     HttpResponse::Ok().json(personas::list())
+}
+
+/// List voices currently loaded on the piper-tts daemon. Proxies the
+/// upstream's own `/voices` endpoint so the UI can pick a voice that
+/// actually exists instead of guessing.
+pub async fn list_voices(state: web::Data<Arc<AppState>>, _user: AuthUser) -> HttpResponse {
+    let Some(base) = state.settings.piper_url.as_deref() else {
+        return HttpResponse::Ok().json(serde_json::json!({"voices": []}));
+    };
+    match state
+        .http_client
+        .get(format!("{}/voices", base.trim_end_matches('/')))
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => match res.json::<serde_json::Value>().await {
+            Ok(v) => HttpResponse::Ok().json(v),
+            Err(e) => {
+                tracing::warn!("piper /voices decode failed: {e}");
+                HttpResponse::Ok().json(serde_json::json!({"voices": []}))
+            }
+        },
+        Ok(res) => {
+            tracing::warn!("piper /voices upstream {}", res.status());
+            HttpResponse::Ok().json(serde_json::json!({"voices": []}))
+        }
+        Err(e) => {
+            tracing::warn!("piper /voices request failed: {e}");
+            HttpResponse::Ok().json(serde_json::json!({"voices": []}))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscribeQuery {
+    /// Optional ISO-639-1 language hint forwarded to whisper.cpp.
+    /// Omitting it lets the model auto-detect.
+    pub lang: Option<String>,
+}
+
+/// Forward an audio blob to whisper.cpp's `/inference` endpoint and
+/// return the transcript. The frontend records via MediaRecorder (webm
+/// /opus by default) and POSTs the raw blob with its Content-Type
+/// header; we wrap that into a multipart form whisper.cpp expects.
+pub async fn transcribe(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    req: actix_web::HttpRequest,
+    query: web::Query<TranscribeQuery>,
+    body: web::Bytes,
+) -> HttpResponse {
+    if state.settings.chat_rate_per_min > 0 && !state.chat_limit.check(&user.sub) {
+        return HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", "60"))
+            .json(serde_json::json!({"error": "too many requests"}));
+    }
+    let Some(base) = state.settings.whisper_url.as_deref() else {
+        return HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({"error": "voice input not configured"}));
+    };
+    if body.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "empty audio"}));
+    }
+    let content_type = req
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("audio/webm")
+        .to_string();
+    let (mime, filename) = match content_type.as_str() {
+        s if s.starts_with("audio/webm") => ("audio/webm", "recording.webm"),
+        s if s.starts_with("audio/ogg") => ("audio/ogg", "recording.ogg"),
+        s if s.starts_with("audio/wav") || s.starts_with("audio/wave") => {
+            ("audio/wav", "recording.wav")
+        }
+        s if s.starts_with("audio/mp4") || s.starts_with("audio/m4a") => {
+            ("audio/mp4", "recording.m4a")
+        }
+        s if s.starts_with("audio/mpeg") => ("audio/mpeg", "recording.mp3"),
+        _ => ("audio/webm", "recording.webm"),
+    };
+    let part = match reqwest::multipart::Part::bytes(body.to_vec())
+        .file_name(filename)
+        .mime_str(mime)
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("whisper part build failed: {e}");
+            return HttpResponse::InternalServerError().finish();
+        }
+    };
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("response_format", "json");
+    if let Some(lang) = query.lang.as_deref().filter(|s| !s.is_empty()) {
+        form = form.text("language", lang.to_string());
+    }
+    let request = state
+        .http_client
+        .post(format!("{}/inference", base.trim_end_matches('/')))
+        .multipart(form);
+    let res = match request.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("whisper request failed: {e}");
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    };
+    if !res.status().is_success() {
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        tracing::warn!("whisper upstream {status}: {text}");
+        return HttpResponse::BadGateway()
+            .json(serde_json::json!({"error": format!("upstream {status}")}));
+    }
+    let parsed: serde_json::Value = match res.json().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("whisper decode failed: {e}");
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": "malformed upstream response"}));
+        }
+    };
+    let text = parsed
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    HttpResponse::Ok().json(serde_json::json!({ "text": text }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TtsBody {
+    pub text: String,
+    /// Piper voice slug — e.g. `en_US-amy-medium`, `fi_FI-harri-medium`.
+    /// Forwarded verbatim; omitted when empty so the upstream uses its
+    /// configured default voice.
+    #[serde(default)]
+    pub voice: Option<String>,
+}
+
+/// Synthesize speech via piper-tts and return the resulting WAV. The
+/// upstream's HTTP API is `POST /` with `{"text": "..."}` returning the
+/// audio body directly — we proxy that, set a precise Content-Type so
+/// the browser's <audio> element handles it natively, and clip
+/// pathological inputs so a giant assistant turn doesn't churn the
+/// synth for minutes.
+pub async fn tts(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    body: web::Json<TtsBody>,
+) -> HttpResponse {
+    if state.settings.chat_rate_per_min > 0 && !state.chat_limit.check(&user.sub) {
+        return HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", "60"))
+            .json(serde_json::json!({"error": "too many requests"}));
+    }
+    let Some(base) = state.settings.piper_url.as_deref() else {
+        return HttpResponse::ServiceUnavailable()
+            .json(serde_json::json!({"error": "tts not configured"}));
+    };
+    let text = body.text.trim();
+    if text.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "empty text"}));
+    }
+    // 8000 chars ≈ several minutes of speech — well above any sensible
+    // assistant turn and tight enough to keep piper from melting on a
+    // pathological paste.
+    let clipped: String = text.chars().take(8_000).collect();
+    let mut payload = serde_json::json!({ "text": clipped });
+    if let Some(voice) = body.voice.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        payload["voice"] = serde_json::Value::String(voice.to_string());
+    }
+    let res = match state
+        .http_client
+        .post(format!("{}/", base.trim_end_matches('/')))
+        .json(&payload)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("piper request failed: {e}");
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    };
+    if !res.status().is_success() {
+        let status = res.status();
+        let snippet = res.text().await.unwrap_or_default();
+        tracing::warn!("piper upstream {status}: {snippet}");
+        return HttpResponse::BadGateway()
+            .json(serde_json::json!({"error": format!("upstream {status}")}));
+    }
+    let bytes = match res.bytes().await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!("piper body read failed: {e}");
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": "malformed upstream response"}));
+        }
+    };
+    HttpResponse::Ok()
+        .content_type("audio/wav")
+        .insert_header(("Cache-Control", "no-store"))
+        .body(bytes)
 }
 
 pub async fn chat(

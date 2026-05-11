@@ -1,7 +1,9 @@
 import { Theme, useTheme } from "@emotion/react";
 import { useEffect, useRef, useState } from "react";
+import useSWR from "swr";
 
-import { imageUrl, Message } from "../api";
+import { api, imageUrl, Message } from "../api";
+import { normalizeVoices, pickVoice, readVoiceOverride } from "../tts";
 import Markdown from "./Markdown";
 import TypingIndicator from "./TypingIndicator";
 
@@ -40,6 +42,14 @@ type Props = {
    * row and re-runs generation with the new content. Wired only on
    * user rows. */
   onEdit?: (id: number, newContent: string) => void;
+  /** Whether the server has a TTS backend wired up. Drives the
+   * read-aloud button on assistant messages. */
+  ttsAvailable?: boolean;
+  /** Content of the most recent user turn before this row. Fed into
+   * the TTS voice picker — the user's own input is the most reliable
+   * language signal, more so than an assistant reply that may switch
+   * language at will. */
+  priorUserContent?: string;
   busy?: boolean;
 };
 
@@ -250,6 +260,8 @@ const MessageView = ({
   onRegenerate,
   onRemix,
   onEdit,
+  ttsAvailable,
+  priorUserContent,
   busy,
 }: Props) => {
   const theme = useTheme();
@@ -447,6 +459,8 @@ const MessageView = ({
           onDeleteFrom={onDeleteFrom}
           onRegenerate={onRegenerate}
           onRemix={onRemix}
+          ttsAvailable={ttsAvailable}
+          priorUserContent={priorUserContent}
           busy={busy}
         />
       )}
@@ -618,6 +632,8 @@ const MessageActions = ({
   onRegenerate,
   onRemix,
   onEdit,
+  ttsAvailable,
+  priorUserContent,
   busy,
 }: {
   msg: DisplayMessage;
@@ -626,11 +642,82 @@ const MessageActions = ({
   onRegenerate?: (id: number) => void;
   onRemix?: (src: string) => void;
   onEdit?: () => void;
+  ttsAvailable?: boolean;
+  priorUserContent?: string;
   busy?: boolean;
 }) => {
   const theme = useTheme();
   const [flash, setFlash] = useState(false);
+  const [ttsState, setTtsState] = useState<"idle" | "loading" | "playing">(
+    "idle",
+  );
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const isAssistant = msg.role === "assistant";
+  // Pull the live list of loaded voices so we send a slug that actually
+  // exists upstream — piper rejects unknown voices with a 4xx. SWR keeps
+  // this cached across messages.
+  const { data: voicesData } = useSWR(
+    ttsAvailable ? "/api/voices" : null,
+    api.voices,
+  );
+
+  useEffect(() => {
+    return () => {
+      audioRef.current?.pause();
+      const url = audioRef.current?.src;
+      audioRef.current = null;
+      if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+    };
+  }, []);
+
+  const toggleTts = async () => {
+    if (ttsState === "playing") {
+      audioRef.current?.pause();
+      return;
+    }
+    if (ttsState === "loading") return;
+    if (!msg.content) return;
+    setTtsState("loading");
+    try {
+      const voices = normalizeVoices(voicesData);
+      const voice = pickVoice(
+        msg.content,
+        priorUserContent,
+        voices,
+        readVoiceOverride(),
+      );
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: msg.content, voice }),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.onended = () => {
+        setTtsState("idle");
+        URL.revokeObjectURL(url);
+      };
+      audio.onpause = () => {
+        if (audio.ended) return;
+        setTtsState("idle");
+        URL.revokeObjectURL(url);
+        audioRef.current = null;
+      };
+      audio.onerror = () => {
+        setTtsState("idle");
+        URL.revokeObjectURL(url);
+      };
+      setTtsState("playing");
+      await audio.play();
+    } catch (e) {
+      console.error("tts failed", e);
+      setTtsState("idle");
+    }
+  };
   // Image-side actions only apply to assistant messages — user uploads
   // came from the user's own device, no point copying or re-downloading.
   const firstImage = isAssistant ? refs[0] : undefined;
@@ -695,6 +782,26 @@ const MessageActions = ({
           onClick={() => onRemix(firstImage.src)}
           label="remix as new prompt"
           icon="auto_fix_high"
+          theme={theme}
+        />
+      )}
+      {isAssistant && ttsAvailable && msg.content && (
+        <ActionButton
+          onClick={() => void toggleTts()}
+          label={
+            ttsState === "playing"
+              ? "stop reading"
+              : ttsState === "loading"
+                ? "loading audio"
+                : "read aloud"
+          }
+          icon={
+            ttsState === "playing"
+              ? "stop_circle"
+              : ttsState === "loading"
+                ? "graphic_eq"
+                : "volume_up"
+          }
           theme={theme}
         />
       )}

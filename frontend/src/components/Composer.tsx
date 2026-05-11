@@ -66,6 +66,9 @@ type Props = {
    * today). Drives the inline indicator under the attachment row —
    * without it the backend silently falls back to Ollama txt2img. */
   img2imgAvailable?: boolean;
+  /** Whether the server can transcribe audio (whisper.cpp endpoint
+   * configured). Drives the mic affordance in the action row. */
+  voiceInAvailable?: boolean;
   /** Available image-prompt personas. */
   personas?: Persona[];
   /** Imperative-handle ref. React 19 takes refs as plain props. */
@@ -82,6 +85,70 @@ const REFINE_KEY = "chat:refineImagePrompt";
 const PERSONA_KEY = "chat:imagePersona";
 const IMG2IMG_KEY = "chat:img2img";
 
+/**
+ * Decode an arbitrary MediaRecorder blob into 16 kHz mono 16-bit PCM
+ * WAV. whisper.cpp's HTTP server uses dr_wav and only accepts WAV; opus
+ * / webm / m4a all bounce with a 400. The Web Audio API handles the
+ * decode + resample for us — `new AudioContext({ sampleRate: 16000 })`
+ * forces resample on decodeAudioData, and downmixing to mono is a
+ * straightforward channel average.
+ */
+async function encodeAsWav(blob: Blob): Promise<Blob> {
+  const bytes = await blob.arrayBuffer();
+  const AC =
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  const ctx = new AC({ sampleRate: 16000 });
+  let decoded: AudioBuffer;
+  try {
+    decoded = await ctx.decodeAudioData(bytes);
+  } finally {
+    void ctx.close().catch(() => {});
+  }
+  const channels = decoded.numberOfChannels;
+  const length = decoded.length;
+  const mono = new Float32Array(length);
+  for (let c = 0; c < channels; c++) {
+    const data = decoded.getChannelData(c);
+    for (let i = 0; i < length; i++) mono[i] += data[i] / channels;
+  }
+  const buf = new ArrayBuffer(44 + length * 2);
+  const view = new DataView(buf);
+  let off = 0;
+  const writeStr = (s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(off++, s.charCodeAt(i));
+  };
+  writeStr("RIFF");
+  view.setUint32(off, 36 + length * 2, true);
+  off += 4;
+  writeStr("WAVE");
+  writeStr("fmt ");
+  view.setUint32(off, 16, true);
+  off += 4; // PCM chunk size
+  view.setUint16(off, 1, true);
+  off += 2; // format = PCM
+  view.setUint16(off, 1, true);
+  off += 2; // channels = 1
+  view.setUint32(off, decoded.sampleRate, true);
+  off += 4;
+  view.setUint32(off, decoded.sampleRate * 2, true);
+  off += 4; // byte rate
+  view.setUint16(off, 2, true);
+  off += 2; // block align
+  view.setUint16(off, 16, true);
+  off += 2; // bits/sample
+  writeStr("data");
+  view.setUint32(off, length * 2, true);
+  off += 4;
+  for (let i = 0; i < length; i++) {
+    const s = Math.max(-1, Math.min(1, mono[i]));
+    view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    off += 2;
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
+
 const Composer = ({
   onSend,
   streaming,
@@ -94,6 +161,7 @@ const Composer = ({
   imageGen = false,
   refinerAvailable = false,
   img2imgAvailable = false,
+  voiceInAvailable = false,
   personas = [],
   ref,
 }: Props) => {
@@ -201,6 +269,128 @@ const Composer = ({
   // the highlight; the overlay only goes away once drag has fully left
   // the shell.
   const dragDepthRef = useRef(0);
+
+  type VoiceState = "idle" | "recording" | "transcribing";
+  const [voiceState, setVoiceState] = useState<VoiceState>("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recorderStreamRef = useRef<MediaStream | null>(null);
+  const recorderChunksRef = useRef<Blob[]>([]);
+
+  const stopVoiceTracks = () => {
+    recorderStreamRef.current?.getTracks().forEach((t) => t.stop());
+    recorderStreamRef.current = null;
+    recorderRef.current = null;
+  };
+
+  const pickRecorderMime = () => {
+    if (typeof MediaRecorder === "undefined") return "";
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+      "audio/mp4",
+    ];
+    return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+  };
+
+  const startVoice = async () => {
+    if (voiceState !== "idle") return;
+    setVoiceError(null);
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setVoiceError(`mic unavailable: ${msg}`);
+      return;
+    }
+    recorderStreamRef.current = stream;
+    recorderChunksRef.current = [];
+    const mime = pickRecorderMime();
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    } catch (e) {
+      stopVoiceTracks();
+      setVoiceError(`recorder failed: ${String(e)}`);
+      return;
+    }
+    recorderRef.current = recorder;
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      const blobType = recorder.mimeType || mime || "audio/webm";
+      const blob = new Blob(recorderChunksRef.current, { type: blobType });
+      recorderChunksRef.current = [];
+      stopVoiceTracks();
+      void uploadVoice(blob);
+    };
+    recorder.start();
+    setVoiceState("recording");
+  };
+
+  const uploadVoice = async (blob: Blob) => {
+    if (blob.size === 0) {
+      setVoiceState("idle");
+      return;
+    }
+    setVoiceState("transcribing");
+    try {
+      // whisper.cpp's HTTP server decodes via dr_wav and rejects opus /
+      // webm with a generic 400. Transcode here to 16 kHz mono PCM WAV
+      // — the format whisper expects natively — using the Web Audio API.
+      const wav = await encodeAsWav(blob);
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": wav.type },
+        body: wav,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${text}`);
+      }
+      const data = (await res.json()) as { text: string };
+      const transcript = data.text?.trim() ?? "";
+      if (transcript) {
+        setValue((prev) => {
+          const sep =
+            prev && !prev.endsWith(" ") && !prev.endsWith("\n") ? " " : "";
+          return prev + sep + transcript;
+        });
+        textareaRef.current?.focus();
+      }
+    } catch (e) {
+      setVoiceError(`transcribe failed: ${String(e)}`);
+    } finally {
+      setVoiceState("idle");
+    }
+  };
+
+  const stopVoice = () => {
+    if (voiceState !== "recording") return;
+    recorderRef.current?.stop();
+  };
+
+  const toggleVoice = () => {
+    if (voiceState === "recording") stopVoice();
+    else if (voiceState === "idle") void startVoice();
+  };
+
+  useEffect(() => {
+    return () => {
+      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+        try {
+          recorderRef.current.stop();
+        } catch {
+          // ignore
+        }
+      }
+      stopVoiceTracks();
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -573,6 +763,51 @@ const Composer = ({
                   </span>
                 </button>
               </>
+            )}
+            {voiceInAvailable && (
+              <button
+                type="button"
+                aria-label={
+                  voiceState === "recording"
+                    ? "stop recording"
+                    : voiceState === "transcribing"
+                      ? "transcribing"
+                      : "record voice"
+                }
+                title={voiceError ?? "voice input"}
+                disabled={voiceState === "transcribing"}
+                aria-pressed={voiceState === "recording"}
+                onClick={toggleVoice}
+                css={{
+                  ...composerSubButtonCss(theme),
+                  color:
+                    voiceState === "recording"
+                      ? theme.colors.error
+                      : voiceError
+                        ? theme.colors.error
+                        : theme.colors.text.muted,
+                  ...(voiceState === "recording"
+                    ? {
+                        animation: "chat-mic-pulse 1.2s ease-in-out infinite",
+                        "@keyframes chat-mic-pulse": {
+                          "0%, 100%": { opacity: 0.55 },
+                          "50%": { opacity: 1 },
+                        },
+                      }
+                    : {}),
+                }}
+              >
+                <span
+                  className="material-icons-outlined"
+                  css={{ fontSize: 22 }}
+                >
+                  {voiceState === "recording"
+                    ? "stop"
+                    : voiceState === "transcribing"
+                      ? "graphic_eq"
+                      : "mic"}
+                </span>
+              </button>
             )}
             {showModeToggle && (
               <button
