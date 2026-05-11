@@ -1,7 +1,7 @@
 import "katex/dist/katex.min.css";
 
 import { Global, useTheme } from "@emotion/react";
-import { ComponentProps, memo } from "react";
+import { ComponentProps, memo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
@@ -12,7 +12,73 @@ import remarkMath from "remark-math";
 const isExternal = (href: string | undefined) =>
   !!href && /^https?:\/\//i.test(href);
 
+/**
+ * Pre-process streaming markdown so a half-arrived fenced code block still
+ * renders as code. While a model is mid-stream a ``` may have opened
+ * without its closing partner — without rebalancing, rehype-highlight
+ * either drops the block or treats the rest of the message as code.
+ */
+const balanceFences = (s: string) => {
+  const matches = s.match(/```/g);
+  if (matches && matches.length % 2 === 1) {
+    return `${s}\n\`\`\`\n`;
+  }
+  return s;
+};
+
+const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
+  const theme = useTheme();
+  const preRef = useRef<HTMLPreElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    const text = preRef.current?.textContent ?? "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard write can fail on non-secure contexts; swallow silently
+    }
+  };
+
+  return (
+    <div css={{ position: "relative" }}>
+      <pre ref={preRef} {...rest}>
+        {children}
+      </pre>
+      <button
+        type="button"
+        onClick={handleCopy}
+        aria-label={copied ? "code copied" : "copy code"}
+        css={{
+          position: "absolute",
+          top: 6,
+          right: 6,
+          padding: "2px 8px",
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+          fontSize: 11,
+          color: theme.colors.text.muted,
+          background: theme.colors.background.main,
+          border: `1px solid ${theme.colors.border}`,
+          borderRadius: 4,
+          cursor: "pointer",
+          opacity: 0.75,
+          "&:hover, &:focus-visible": {
+            opacity: 1,
+            color: theme.colors.text.main,
+          },
+        }}
+      >
+        {copied ? "copied" : "copy"}
+      </button>
+    </div>
+  );
+};
+
 const components: ComponentProps<typeof ReactMarkdown>["components"] = {
+  pre: ({ children, ...rest }) => <CodeBlock {...rest}>{children}</CodeBlock>,
   a: ({ href, children, ...rest }) =>
     isExternal(href) ? (
       <a {...rest} href={href} target="_blank" rel="noopener noreferrer">
@@ -160,7 +226,7 @@ const Markdown = ({ children }: { children: string }) => {
           ]}
           components={components}
         >
-          {children}
+          {balanceFences(children)}
         </ReactMarkdown>
       </div>
     </>
