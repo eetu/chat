@@ -6,6 +6,7 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import useSWR, { useSWRConfig } from "swr";
 
 import { api, Conversation, Me } from "../api";
@@ -214,7 +215,13 @@ const ConversationRow = ({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(convo.title);
   const [saving, setSaving] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
+    null,
+  );
   const inputRef = useRef<HTMLInputElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!editing) return;
@@ -224,11 +231,57 @@ const ConversationRow = ({
     el.select();
   }, [editing]);
 
-  const startEdit = (e: React.MouseEvent | React.KeyboardEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointer = (e: PointerEvent) => {
+      const el = menuRef.current;
+      const trigger = triggerRef.current;
+      if (!(e.target instanceof Node)) return;
+      // Clicks on the trigger itself are handled by its own onClick; the
+      // outside-pointer guard only closes for things outside both the
+      // menu and the trigger button.
+      if (el?.contains(e.target) || trigger?.contains(e.target)) return;
+      setMenuOpen(false);
+    };
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    const onScroll = () => setMenuOpen(false);
+    window.addEventListener("pointerdown", onPointer);
+    window.addEventListener("keydown", onKey);
+    // Capture-phase scroll so it fires for any scroll container parent
+    // of the sidebar (the conversation list itself, mainly). Position is
+    // anchored to viewport coords; scrolling invalidates it.
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("pointerdown", onPointer);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [menuOpen]);
+
+  const openMenu = () => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (rect) {
+      setMenuPos({
+        top: rect.bottom + 4,
+        right: Math.max(8, window.innerWidth - rect.right),
+      });
+    }
+    setMenuOpen(true);
+  };
+
+  const startEdit = () => {
+    setMenuOpen(false);
     setDraft(convo.title);
     setEditing(true);
+  };
+
+  const requestDelete = () => {
+    setMenuOpen(false);
+    if (window.confirm("delete this conversation?")) onDelete();
   };
 
   const cancel = () => {
@@ -256,17 +309,19 @@ const ConversationRow = ({
   };
 
   return (
-    <SwipeRow onDelete={onDelete}>
+    <SwipeRow onDelete={onDelete} hideMouseDelete>
       <div
         css={{
           position: "relative",
-          "& .row-edit": {
+          "& .row-menu-trigger": {
             opacity: 0,
             transition: "opacity 120ms ease",
           },
-          "&:hover .row-edit, &:focus-within .row-edit": { opacity: 1 },
+          "&:hover .row-menu-trigger, &:focus-within .row-menu-trigger": {
+            opacity: 1,
+          },
           "@media (hover: none)": {
-            "& .row-edit": { opacity: 1 },
+            "& .row-menu-trigger": { opacity: 1 },
           },
         }}
       >
@@ -353,11 +408,19 @@ const ConversationRow = ({
         )}
         {!editing && (
           <button
+            ref={triggerRef}
             type="button"
-            className="row-edit"
-            aria-label="rename conversation"
-            title="rename"
-            onClick={startEdit}
+            className="row-menu-trigger"
+            aria-label="conversation actions"
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            title="actions"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (menuOpen) setMenuOpen(false);
+              else openMenu();
+            }}
             css={{
               position: "absolute",
               top: 8,
@@ -369,8 +432,12 @@ const ConversationRow = ({
               justifyContent: "center",
               border: "none",
               borderRadius: 4,
-              background: "transparent",
-              color: theme.colors.text.muted,
+              background: menuOpen
+                ? theme.colors.background.main
+                : "transparent",
+              color: menuOpen
+                ? theme.colors.text.main
+                : theme.colors.text.muted,
               cursor: "pointer",
               "&:hover": {
                 background: theme.colors.background.main,
@@ -378,15 +445,102 @@ const ConversationRow = ({
               },
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 16 }}>
-              edit
+            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+              more_vert
             </span>
           </button>
         )}
+        {/* Portal the menu to body so SwipeRow's overflow:hidden doesn't
+            clip it against the next row. Position is captured from the
+            trigger's bounding rect at open-time; window scroll / resize
+            close the menu instead of chasing the trigger live. */}
+        {menuOpen &&
+          menuPos &&
+          createPortal(
+            <div
+              ref={menuRef}
+              role="menu"
+              css={{
+                position: "fixed",
+                top: menuPos.top,
+                right: menuPos.right,
+                zIndex: 50,
+                minWidth: 160,
+                background: theme.colors.background.main,
+                border: `1px solid ${theme.colors.border}`,
+                borderRadius: theme.border.radius,
+                boxShadow: theme.shadows.main,
+                padding: 4,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <MenuItem
+                theme={theme}
+                icon="edit"
+                label="rename"
+                onSelect={startEdit}
+              />
+              <MenuItem
+                theme={theme}
+                icon="delete_outline"
+                label="delete"
+                danger
+                onSelect={requestDelete}
+              />
+            </div>,
+            document.body,
+          )}
       </div>
     </SwipeRow>
   );
 };
+
+const MenuItem = ({
+  theme,
+  icon,
+  label,
+  danger,
+  onSelect,
+}: {
+  theme: Theme;
+  icon: string;
+  label: string;
+  danger?: boolean;
+  onSelect: () => void;
+}) => (
+  <button
+    type="button"
+    role="menuitem"
+    onClick={(e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onSelect();
+    }}
+    css={{
+      ...theme.typography.body2,
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      padding: "8px 10px",
+      border: "none",
+      background: "transparent",
+      color: danger ? theme.colors.error : theme.colors.text.main,
+      textAlign: "left",
+      cursor: "pointer",
+      borderRadius: 4,
+      "&:hover": {
+        background: danger ? theme.colors.error : theme.colors.background.light,
+        color: danger ? "#fff" : theme.colors.text.main,
+      },
+    }}
+  >
+    <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+      {icon}
+    </span>
+    {label}
+  </button>
+);
 
 function relativeTime(unix: number): string {
   const diff = Date.now() / 1000 - unix;

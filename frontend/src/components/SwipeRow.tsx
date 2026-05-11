@@ -17,10 +17,15 @@ const SwipeRow = ({
   children,
   onDelete,
   confirmLabel = "delete this conversation?",
+  hideMouseDelete = false,
 }: {
   children: ReactNode;
   onDelete: () => void;
   confirmLabel?: string;
+  /** When true, suppress the hover-revealed × button so a wrapping
+   * component can render its own action menu (kebab, etc.) without two
+   * affordances overlapping. Touch swipe-to-delete is unaffected. */
+  hideMouseDelete?: boolean;
 }) => {
   const theme = useTheme();
   const [offset, setOffset] = useState(0);
@@ -135,42 +140,44 @@ const SwipeRow = ({
         }}
       >
         {children}
-        {/* hover-revealed × button (mouse / pen) */}
-        <button
-          type="button"
-          aria-label="delete"
-          className="swipe-row__x"
-          onClick={onMouseDelete}
-          css={{
-            position: "absolute",
-            top: "50%",
-            right: 8,
-            transform: "translateY(-50%)",
-            width: 24,
-            height: 24,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            border: "none",
-            borderRadius: 4,
-            background: "transparent",
-            color: theme.colors.text.muted,
-            cursor: "pointer",
-            opacity: 0,
-            pointerEvents: "none",
-            transition: "opacity 120ms ease, background 120ms ease",
-            "@media (hover: hover)": {
-              "&:hover": {
-                background: theme.colors.text.light,
-                color: theme.colors.error,
+        {!hideMouseDelete && (
+          /* hover-revealed × button (mouse / pen) */
+          <button
+            type="button"
+            aria-label="delete"
+            className="swipe-row__x"
+            onClick={onMouseDelete}
+            css={{
+              position: "absolute",
+              top: "50%",
+              right: 8,
+              transform: "translateY(-50%)",
+              width: 24,
+              height: 24,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              borderRadius: 4,
+              background: "transparent",
+              color: theme.colors.text.muted,
+              cursor: "pointer",
+              opacity: 0,
+              pointerEvents: "none",
+              transition: "opacity 120ms ease, background 120ms ease",
+              "@media (hover: hover)": {
+                "&:hover": {
+                  background: theme.colors.text.light,
+                  color: theme.colors.error,
+                },
               },
-            },
-          }}
-        >
-          <span className="material-icons-outlined" css={{ fontSize: 18 }}>
-            close
-          </span>
-        </button>
+            }}
+          >
+            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+              close
+            </span>
+          </button>
+        )}
       </div>
     </div>
   );
