@@ -134,7 +134,13 @@ const Composer = ({
       return false;
     }
   });
-  const showImg2imgToggle = img2imgAvailable;
+  // The img2img toggle is only meaningful when an image is actually
+  // attached — without one the composer should behave like a plain chat
+  // surface (model picker enabled, no refine/persona surface, etc.).
+  // Keeping the toggle hidden until an attachment lands matches user
+  // intent ("I want to edit this image") and avoids the trap where a
+  // leftover localStorage flag locks an empty composer into image-mode.
+  const showImg2imgToggle = img2imgAvailable && attached.length > 0;
   const toggleImg2img = () => {
     setImg2img((prev) => {
       const next = !prev;
@@ -146,10 +152,11 @@ const Composer = ({
       return next;
     });
   };
-  // Effective send-time mode: img2img toggle promotes to "image" so the
-  // backend routes to the img2img path even when the picker model is
-  // a text-only chat model.
-  const effectiveMode: Mode = img2img ? "image" : mode;
+  // Effective send-time mode: img2img promotes to "image" only when an
+  // image is actually attached. A stale toggle without an attachment
+  // falls back to whatever the chat/image mode toggle says — almost
+  // always plain chat.
+  const effectiveMode: Mode = img2img && attached.length > 0 ? "image" : mode;
   const [refine, setRefine] = useState<boolean>(() => {
     try {
       const v = window.localStorage.getItem(REFINE_KEY);
@@ -632,7 +639,7 @@ const Composer = ({
               <ModelPicker
                 value={model ?? null}
                 onChange={onModelChange}
-                disabled={img2img}
+                disabled={img2img && attached.length > 0}
               />
             )}
             {streaming && onStop ? (
