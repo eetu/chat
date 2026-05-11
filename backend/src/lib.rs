@@ -14,7 +14,8 @@ use std::sync::Arc;
 use actix_cors::Cors;
 use actix_files::Files;
 use actix_session::{config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware};
-use actix_web::{cookie::Key, middleware, middleware::DefaultHeaders, web, App, HttpServer};
+use actix_web::{cookie::Key, middleware::DefaultHeaders, web, App, HttpServer};
+use tracing_actix_web::TracingLogger;
 
 /// Content-Security-Policy applied to every response. `style-src` allows
 /// inline because Emotion injects styles at runtime; the google fonts +
@@ -105,7 +106,11 @@ pub fn create_app(
 
     App::new()
         .app_data(web::Data::new(state))
-        .wrap(middleware::Logger::default())
+        // TracingLogger opens a per-request span (with a request_id field)
+        // that all `tracing::*` calls in handlers inherit. Replaces the
+        // built-in access logger — request lifecycle is logged inside the
+        // span instead.
+        .wrap(TracingLogger::default())
         .wrap(
             DefaultHeaders::new()
                 .add(("Content-Security-Policy", CSP))
