@@ -389,11 +389,28 @@ pub async fn chat(
         tokio::spawn(async move {
             // Hold a permit for the duration of this image job. With the
             // default semaphore size of 1 this serialises GPU work so we
-            // don't OOM when two clients send at once. Permit drops on
-            // return via `_permit`. If the semaphore is closed the job
-            // is silently abandoned — should never happen in practice.
-            let _permit = match image_sem.acquire_owned().await {
+            // don't OOM when two clients send at once. Emit a one-shot
+            // `queued` SSE event when we couldn't take a permit instantly
+            // so the UI can show a waiting-for-gpu state. Permit drops on
+            // return via `_permit`; if the semaphore is closed the job is
+            // silently abandoned — should never happen in practice.
+            let _permit = match image_sem.clone().try_acquire_owned() {
                 Ok(p) => p,
+                Err(tokio::sync::TryAcquireError::NoPermits) => {
+                    let _ = tx
+                        .send(Ok(ollama::sse_json(
+                            "queued",
+                            &serde_json::json!({}),
+                        )))
+                        .await;
+                    match image_sem.acquire_owned().await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            tracing::error!("image semaphore closed: {e}");
+                            return;
+                        }
+                    }
+                }
                 Err(e) => {
                     tracing::error!("image semaphore closed: {e}");
                     return;

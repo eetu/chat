@@ -17,6 +17,10 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
   /** Latest preview frame from ComfyUI (data URL). Same lifecycle as
    * `progress` — only meaningful while `status === "pending"`. */
   previewDataUrl?: string;
+  /** Image-mode only: backend is waiting on the image-gen semaphore.
+   * Cleared automatically when the first progress / preview / delta
+   * event arrives. */
+  queued?: boolean;
 };
 
 export function useChat(convId: string | undefined) {
@@ -128,6 +132,15 @@ export function useChat(convId: string | undefined) {
               }
               return next;
             });
+          } else if (evt.type === "queued") {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, queued: true };
+              }
+              return next;
+            });
           } else if (evt.type === "progress") {
             setMessages((prev) => {
               const next = prev.slice();
@@ -135,6 +148,7 @@ export function useChat(convId: string | undefined) {
               if (last && last.role === "assistant") {
                 next[next.length - 1] = {
                   ...last,
+                  queued: false,
                   progress: { value: evt.value, max: evt.max },
                 };
               }
@@ -147,6 +161,7 @@ export function useChat(convId: string | undefined) {
               if (last && last.role === "assistant") {
                 next[next.length - 1] = {
                   ...last,
+                  queued: false,
                   previewDataUrl: `data:${evt.mime};base64,${evt.b64}`,
                 };
               }

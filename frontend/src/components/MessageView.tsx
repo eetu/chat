@@ -18,6 +18,9 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   /** Live preview frame (data URL) from ComfyUI's WebSocket. Only
    * meaningful while the row is pending. */
   previewDataUrl?: string;
+  /** Image-mode only: backend is waiting on the image-gen semaphore.
+   * Drives the queued state on the pending placeholder. */
+  queued?: boolean;
 };
 
 type Props = {
@@ -369,6 +372,7 @@ const MessageView = ({
         <ImageGenPlaceholder
           progress={msg.progress}
           previewDataUrl={msg.previewDataUrl}
+          queued={msg.queued}
         />
       )}
       {isError && !hasContent && (
@@ -644,13 +648,16 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
 const ImageGenPlaceholder = ({
   progress,
   previewDataUrl,
+  queued,
 }: {
   progress?: { value: number; max: number };
   previewDataUrl?: string;
+  queued?: boolean;
 }) => {
   const theme = useTheme();
-  const stepLabel =
-    progress && progress.max > 0
+  const stepLabel = queued
+    ? "queued — waiting for gpu…"
+    : progress && progress.max > 0
       ? `step ${progress.value} / ${progress.max}`
       : "rendering image…";
   const pct =
