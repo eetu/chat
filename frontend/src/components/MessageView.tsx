@@ -21,6 +21,10 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   /** Image-mode only: backend is waiting on the image-gen semaphore.
    * Drives the queued state on the pending placeholder. */
   queued?: boolean;
+  /** End-of-turn token / TPS stats from the live stream. Not persisted
+   * server-side; only present on the most recent assistant turn this
+   * session. */
+  stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
 };
 
 type Props = {
@@ -667,6 +671,7 @@ const MessageActions = ({
       className="message-actions"
       css={{
         display: "flex",
+        alignItems: "center",
         gap: 4,
         marginTop: 2,
       }}
@@ -717,6 +722,7 @@ const MessageActions = ({
           theme={theme}
         />
       )}
+      {msg.stats && <StatsCaption stats={msg.stats} />}
     </div>
   );
 };
@@ -796,6 +802,32 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
       </summary>
       <div css={{ marginTop: 4, fontStyle: "italic" }}>{text}</div>
     </details>
+  );
+};
+
+const StatsCaption = ({
+  stats,
+}: {
+  stats: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
+}) => {
+  const theme = useTheme();
+  const tps =
+    stats.tokens_per_sec >= 10
+      ? stats.tokens_per_sec.toFixed(0)
+      : stats.tokens_per_sec.toFixed(1);
+  return (
+    <span
+      css={{
+        ...theme.typography.caption,
+        color: theme.colors.text.muted,
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+        fontSize: 11,
+        marginLeft: "auto",
+      }}
+      title={`${stats.prompt_tokens} prompt + ${stats.tokens} output tokens`}
+    >
+      {stats.tokens} tok · {tps} t/s
+    </span>
   );
 };
 

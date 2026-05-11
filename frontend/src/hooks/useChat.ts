@@ -21,6 +21,10 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
    * Cleared automatically when the first progress / preview / delta
    * event arrives. */
   queued?: boolean;
+  /** Text-mode only: end-of-turn generation stats from Ollama. Not
+   * persisted server-side — present only on the live stream of this
+   * conversation. */
+  stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
 };
 
 export function useChat(convId: string | undefined) {
@@ -31,6 +35,11 @@ export function useChat(convId: string | undefined) {
   const [loaded, setLoaded] = useState(false);
   const [lastConvId, setLastConvId] = useState(convId);
   const abortRef = useRef<AbortController | null>(null);
+  /// Server doesn't persist generation stats, so the in-memory copy on
+  /// the last assistant bubble would be wiped when we re-fetch the
+  /// canonical thread at end-of-stream. Stash the latest stats event
+  /// here and splice it back onto the freshly-fetched row.
+  const lastStatsRef = useRef<LiveMessage["stats"] | null>(null);
 
   // Reset during render when the conversation switches — keeps initial
   // state synchronized with the prop without an effect.
@@ -39,6 +48,7 @@ export function useChat(convId: string | undefined) {
     setMessages([]);
     setError(null);
     setLoaded(false);
+    lastStatsRef.current = null;
   }
 
   useEffect(() => {
@@ -167,6 +177,21 @@ export function useChat(convId: string | undefined) {
               }
               return next;
             });
+          } else if (evt.type === "stats") {
+            const stats = {
+              tokens: evt.tokens,
+              prompt_tokens: evt.prompt_tokens,
+              tokens_per_sec: evt.tokens_per_sec,
+            };
+            lastStatsRef.current = stats;
+            setMessages((prev) => {
+              const next = prev.slice();
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, stats };
+              }
+              return next;
+            });
           } else if (evt.type === "done") {
             // The backend kicks off an auto-rename task after emitting
             // `done`. Re-fetch the sidebar list once it has likely
@@ -205,6 +230,17 @@ export function useChat(convId: string | undefined) {
         if (convId && !aborted) {
           api.getMessages(convId).then(
             (rows) => {
+              // Stats live only on the in-memory copy; re-attach them
+              // to the freshly-fetched final assistant row so the
+              // caption survives the post-stream refetch.
+              const pending = lastStatsRef.current;
+              if (pending && rows.length > 0) {
+                const lastIdx = rows.length - 1;
+                if (rows[lastIdx].role === "assistant") {
+                  (rows[lastIdx] as LiveMessage).stats = pending;
+                }
+              }
+              lastStatsRef.current = null;
               setMessages(rows);
               if (rows.some((r) => r.status === "error")) {
                 setError(null);

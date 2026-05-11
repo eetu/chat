@@ -117,7 +117,15 @@ export type ChatStreamEvent =
   /** Image-mode only: the backend is waiting on a slot in the image-gen
    * semaphore. Sent at most once per request and only when the permit
    * wasn't immediately available. */
-  | { type: "queued" };
+  | { type: "queued" }
+  /** Text-mode only: end-of-turn generation stats. Lives only for the
+   * current SSE stream — not persisted yet, so reload drops them. */
+  | {
+      type: "stats";
+      tokens: number;
+      prompt_tokens: number;
+      tokens_per_sec: number;
+    };
 
 /**
  * POST /api/chat and parse the SSE response stream produced by actix-web-lab.
@@ -215,6 +223,23 @@ function parseFrame(frame: string): ChatStreamEvent | null {
     }
   }
   if (event === "queued") return { type: "queued" };
+  if (event === "stats") {
+    try {
+      const parsed = JSON.parse(data) as {
+        tokens: number;
+        prompt_tokens: number;
+        tokens_per_sec: number;
+      };
+      return {
+        type: "stats",
+        tokens: parsed.tokens,
+        prompt_tokens: parsed.prompt_tokens,
+        tokens_per_sec: parsed.tokens_per_sec,
+      };
+    } catch {
+      return null;
+    }
+  }
   if (event === "preview") {
     try {
       const parsed = JSON.parse(data) as { mime: string; b64: string };
