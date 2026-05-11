@@ -13,6 +13,10 @@ type ModelEntry = {
 type Props = {
   value: string | null;
   onChange: (next: string) => void;
+  /** When true, the picker renders dimmed and non-interactive. Used in
+   * img2img mode where the selected chat model has no bearing on the
+   * upstream that runs the job. */
+  disabled?: boolean;
 };
 
 /**
@@ -20,7 +24,7 @@ type Props = {
  * `{ name, locked: true }` entry, the picker collapses to a read-only
  * label (server enforces `OLLAMA_MODEL`).
  */
-const ModelPicker = ({ value, onChange }: Props) => {
+const ModelPicker = ({ value, onChange, disabled }: Props) => {
   const theme = useTheme();
   const { data, error } = useSWR("/api/models", api.models);
 
@@ -82,17 +86,26 @@ const ModelPicker = ({ value, onChange }: Props) => {
     <select
       value={value ?? names[0]}
       onChange={(e) => onChange(e.target.value)}
+      disabled={disabled}
+      title={
+        disabled
+          ? "model selection has no effect in img2img mode — flux kontext runs the job"
+          : undefined
+      }
       css={{
         ...theme.typography.body2,
         background: "transparent",
         border: "none",
         padding: "4px 4px",
         color: theme.colors.text.muted,
-        cursor: "pointer",
+        cursor: disabled ? "not-allowed" : "pointer",
         maxWidth: 220,
         outline: "none",
         appearance: "auto",
-        "&:hover": { color: theme.colors.text.main },
+        opacity: disabled ? 0.4 : 1,
+        "&:hover": {
+          color: disabled ? theme.colors.text.muted : theme.colors.text.main,
+        },
         "&:focus": { color: theme.colors.text.main },
       }}
     >

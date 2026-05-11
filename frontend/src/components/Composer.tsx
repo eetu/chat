@@ -592,7 +592,11 @@ const Composer = ({
           </div>
           <div css={{ display: "flex", alignItems: "center", gap: 12 }}>
             {onModelChange && (
-              <ModelPicker value={model ?? null} onChange={onModelChange} />
+              <ModelPicker
+                value={model ?? null}
+                onChange={onModelChange}
+                disabled={img2img}
+              />
             )}
             {streaming && onStop ? (
               <button
