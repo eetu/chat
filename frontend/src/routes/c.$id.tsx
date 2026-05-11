@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
 import { api, Conversation, ModelCapabilities, Persona, Status } from "../api";
-import Composer from "../components/Composer";
+import Composer, { ComposerHandle } from "../components/Composer";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
 import { mq } from "../mq";
@@ -20,6 +20,7 @@ const ChatView = () => {
   const theme = useTheme();
   const { id } = useParams({ from: "/c/$id" });
   const scrollRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<ComposerHandle>(null);
   // True while the viewport is glued to the bottom; flipped off the moment
   // the user scrolls up so streaming deltas don't yank them back.
   const stickRef = useRef(true);
@@ -140,6 +141,39 @@ const ChatView = () => {
     stickRef.current = true;
     setShowJump(false);
     void send(content, model ?? undefined, images, mode, refine, persona);
+  };
+
+  /**
+   * Pull an existing generated image into the composer as the seed for a
+   * new img2img turn. Accepts either a data URL (optimistic state) or a
+   * cookie-authed `/api/conversations/.../image/...` URL.
+   */
+  const onRemix = async (src: string) => {
+    try {
+      let base64: string;
+      let preview: string;
+      if (src.startsWith("data:")) {
+        preview = src;
+        const comma = src.indexOf(",");
+        base64 = comma >= 0 ? src.slice(comma + 1) : "";
+      } else {
+        const blob = await (
+          await fetch(src, { credentials: "include" })
+        ).blob();
+        preview = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(r.error);
+          r.readAsDataURL(blob);
+        });
+        const comma = preview.indexOf(",");
+        base64 = comma >= 0 ? preview.slice(comma + 1) : "";
+      }
+      if (!base64) return;
+      composerRef.current?.remixWithImage({ base64, preview });
+    } catch (e) {
+      console.error("remix failed", e);
+    }
   };
 
   const onScroll = () => {
@@ -264,6 +298,7 @@ const ChatView = () => {
               convId={id}
               onDeleteFrom={deleteFrom}
               onRegenerate={regenerate}
+              onRemix={status?.img2img_available ? onRemix : undefined}
               busy={busy}
             />
           ))}
@@ -321,6 +356,7 @@ const ChatView = () => {
         }}
       >
         <Composer
+          ref={composerRef}
           onSend={sendWithModel}
           streaming={busy}
           onStop={onStopBusy}

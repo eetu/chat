@@ -1,7 +1,9 @@
 import { Theme, useTheme } from "@emotion/react";
 import {
   KeyboardEvent,
+  Ref,
   useEffect,
+  useImperativeHandle,
   useLayoutEffect,
   useRef,
   useState,
@@ -10,6 +12,16 @@ import {
 import { resizeImageForUpload } from "../image";
 import { mq } from "../mq";
 import ModelPicker from "./ModelPicker";
+
+/**
+ * Imperative handle parents can grab to seed the composer with an
+ * incoming image — used by the "remix" action on a generated image to
+ * pre-fill the attachment row and flip the img2img toggle without going
+ * through the file picker again.
+ */
+export type ComposerHandle = {
+  remixWithImage: (image: { base64: string; preview: string }) => void;
+};
 
 type Mode = "chat" | "image";
 
@@ -56,6 +68,8 @@ type Props = {
   img2imgAvailable?: boolean;
   /** Available image-prompt personas. */
   personas?: Persona[];
+  /** Imperative-handle ref. React 19 takes refs as plain props. */
+  ref?: Ref<ComposerHandle>;
 };
 
 /**
@@ -81,6 +95,7 @@ const Composer = ({
   refinerAvailable = false,
   img2imgAvailable = false,
   personas = [],
+  ref,
 }: Props) => {
   const theme = useTheme();
   const [value, setValue] = useState("");
@@ -320,6 +335,28 @@ const Composer = ({
       draftRef.current = "";
     }
   };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      remixWithImage: (image) => {
+        setAttached([image]);
+        setImg2img(true);
+        try {
+          window.localStorage.setItem(IMG2IMG_KEY, "1");
+        } catch {
+          // ignore
+        }
+        setValue("");
+        setRecallIndex(-1);
+        draftRef.current = "";
+        // Defer focus until after the attachment chip has rendered so the
+        // textarea doesn't fight with React's layout pass.
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      },
+    }),
+    [],
+  );
 
   const canSend = (!!value.trim() || attached.length > 0) && !streaming;
 

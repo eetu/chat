@@ -28,6 +28,10 @@ type Props = {
   convId?: string;
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
+  /** Click handler that pre-fills the composer with an existing generated
+   * image and flips it into img2img mode. Wired only on assistant rows
+   * with at least one rendered image. */
+  onRemix?: (src: string) => void;
   busy?: boolean;
 };
 
@@ -236,6 +240,7 @@ const MessageView = ({
   convId,
   onDeleteFrom,
   onRegenerate,
+  onRemix,
   busy,
 }: Props) => {
   const theme = useTheme();
@@ -419,6 +424,7 @@ const MessageView = ({
           refs={refs}
           onDeleteFrom={onDeleteFrom}
           onRegenerate={onRegenerate}
+          onRemix={onRemix}
           busy={busy}
         />
       )}
@@ -478,12 +484,14 @@ const MessageActions = ({
   refs,
   onDeleteFrom,
   onRegenerate,
+  onRemix,
   busy,
 }: {
   msg: DisplayMessage;
   refs: ImageRef[];
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
+  onRemix?: (src: string) => void;
   busy?: boolean;
 }) => {
   const theme = useTheme();
@@ -544,6 +552,14 @@ const MessageActions = ({
           onClick={downloadImage}
           label="download image"
           icon="download"
+          theme={theme}
+        />
+      )}
+      {firstImage && onRemix && (
+        <ActionButton
+          onClick={() => onRemix(firstImage.src)}
+          label="remix as new prompt"
+          icon="auto_fix_high"
           theme={theme}
         />
       )}
