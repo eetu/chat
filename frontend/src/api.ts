@@ -80,6 +80,13 @@ export const api = {
     }).then((r) => {
       if (!r.ok) throw new Error(`${r.status}`);
     }),
+  renameConversation: (id: string, title: string) =>
+    fetch(`/api/conversations/${id}`, {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    }).then(json<Conversation>),
   getMessages: (id: string) =>
     fetch(`/api/conversations/${id}/messages`, {
       credentials: "include",

@@ -141,11 +141,13 @@ pub fn create_app(
                 .route("/models", web::get().to(handlers::list_models))
                 .route("/models/caps", web::get().to(handlers::model_caps))
                 .route("/personas", web::get().to(handlers::list_personas))
+                .route("/voices", web::get().to(handlers::list_voices))
                 .service(
                     web::scope("/conversations")
                         .route("", web::get().to(handlers::list_conversations))
                         .route("", web::post().to(handlers::create_conversation))
                         .route("/{id}", web::delete().to(handlers::delete_conversation))
+                        .route("/{id}", web::patch().to(handlers::update_conversation))
                         .route("/{id}/messages", web::get().to(handlers::get_messages))
                         .route(
                             "/{conv_id}/messages/{msg_id}",

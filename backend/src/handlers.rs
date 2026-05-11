@@ -127,6 +127,43 @@ pub async fn delete_conversation(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateConvBody {
+    /// Manual title override. Trimmed; rejected when empty or wildly
+    /// long so a stray paste can't fill the sidebar with a paragraph.
+    pub title: Option<String>,
+}
+
+pub async fn update_conversation(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    path: web::Path<String>,
+    body: web::Json<UpdateConvBody>,
+) -> HttpResponse {
+    let id = path.into_inner();
+    if let Some(raw) = &body.title {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "title must not be empty"}));
+        }
+        if trimmed.chars().count() > 120 {
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": "title too long (max 120 chars)"}));
+        }
+        if let Err(e) = state
+            .storage
+            .set_conversation_title(&user.sub, &id, trimmed)
+        {
+            return storage_err(e);
+        }
+    }
+    match state.storage.get_conversation(&user.sub, &id) {
+        Ok(c) => HttpResponse::Ok().json(c),
+        Err(e) => storage_err(e),
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct MessageDto {
     id: i64,

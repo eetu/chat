@@ -1,12 +1,12 @@
-import { useTheme } from "@emotion/react";
+import { Theme, useTheme } from "@emotion/react";
 import {
   Link,
   useLocation,
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
-import { memo, useCallback } from "react";
-import useSWR from "swr";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import useSWR, { useSWRConfig } from "swr";
 
 import { api, Conversation, Me } from "../api";
 import { mq } from "../mq";
@@ -136,44 +136,13 @@ const Sidebar = ({ onClose }: Props) => {
           </div>
         )}
         {data?.map((c) => (
-          <SwipeRow key={c.id} onDelete={() => onDelete(c.id)}>
-            <Link
-              to="/c/$id"
-              params={{ id: c.id }}
-              css={{
-                display: "block",
-                padding: "10px 16px",
-                borderLeft: `2px solid ${
-                  activeId === c.id ? theme.colors.activity.on : "transparent"
-                }`,
-                background:
-                  activeId === c.id
-                    ? theme.colors.activity.onSoft
-                    : "transparent",
-              }}
-            >
-              <div
-                css={{
-                  ...theme.typography.body2,
-                  color: theme.colors.text.main,
-                  whiteSpace: "nowrap",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                }}
-              >
-                {c.title || "untitled"}
-              </div>
-              <div
-                css={{
-                  ...theme.typography.caption,
-                  color: theme.colors.text.muted,
-                  marginTop: 2,
-                }}
-              >
-                {relativeTime(c.updated_at)}
-              </div>
-            </Link>
-          </SwipeRow>
+          <ConversationRow
+            key={c.id}
+            convo={c}
+            active={activeId === c.id}
+            theme={theme}
+            onDelete={() => onDelete(c.id)}
+          />
         ))}
       </div>
 
@@ -227,6 +196,195 @@ const Sidebar = ({ onClose }: Props) => {
         </button>
       )}
     </aside>
+  );
+};
+
+const ConversationRow = ({
+  convo,
+  active,
+  theme,
+  onDelete,
+}: {
+  convo: Conversation;
+  active: boolean;
+  theme: Theme;
+  onDelete: () => void;
+}) => {
+  const { mutate } = useSWRConfig();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(convo.title);
+  const [saving, setSaving] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!editing) return;
+    const el = inputRef.current;
+    if (!el) return;
+    el.focus();
+    el.select();
+  }, [editing]);
+
+  const startEdit = (e: React.MouseEvent | React.KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDraft(convo.title);
+    setEditing(true);
+  };
+
+  const cancel = () => {
+    setEditing(false);
+    setDraft(convo.title);
+  };
+
+  const commit = async () => {
+    const next = draft.trim();
+    if (!next || next === convo.title) {
+      cancel();
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.renameConversation(convo.id, next);
+      await mutate("/api/conversations");
+      setEditing(false);
+    } catch (e) {
+      console.error("rename failed", e);
+      cancel();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <SwipeRow onDelete={onDelete}>
+      <div
+        css={{
+          position: "relative",
+          "& .row-edit": {
+            opacity: 0,
+            transition: "opacity 120ms ease",
+          },
+          "&:hover .row-edit, &:focus-within .row-edit": { opacity: 1 },
+          "@media (hover: none)": {
+            "& .row-edit": { opacity: 1 },
+          },
+        }}
+      >
+        {editing ? (
+          <div
+            css={{
+              padding: "10px 16px",
+              borderLeft: `2px solid ${theme.colors.activity.on}`,
+              background: theme.colors.activity.onSoft,
+            }}
+          >
+            <input
+              ref={inputRef}
+              value={draft}
+              disabled={saving}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  cancel();
+                }
+              }}
+              onBlur={() => void commit()}
+              maxLength={120}
+              css={{
+                ...theme.typography.body2,
+                width: "100%",
+                background: theme.colors.background.main,
+                border: `1px solid ${theme.colors.activity.on}`,
+                borderRadius: 4,
+                padding: "3px 6px",
+                color: theme.colors.text.main,
+                outline: "none",
+              }}
+            />
+            <div
+              css={{
+                ...theme.typography.caption,
+                color: theme.colors.text.muted,
+                marginTop: 4,
+              }}
+            >
+              enter to save · esc to cancel
+            </div>
+          </div>
+        ) : (
+          <Link
+            to="/c/$id"
+            params={{ id: convo.id }}
+            css={{
+              display: "block",
+              padding: "10px 16px",
+              paddingRight: 40,
+              borderLeft: `2px solid ${
+                active ? theme.colors.activity.on : "transparent"
+              }`,
+              background: active ? theme.colors.activity.onSoft : "transparent",
+            }}
+          >
+            <div
+              css={{
+                ...theme.typography.body2,
+                color: theme.colors.text.main,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {convo.title || "untitled"}
+            </div>
+            <div
+              css={{
+                ...theme.typography.caption,
+                color: theme.colors.text.muted,
+                marginTop: 2,
+              }}
+            >
+              {relativeTime(convo.updated_at)}
+            </div>
+          </Link>
+        )}
+        {!editing && (
+          <button
+            type="button"
+            className="row-edit"
+            aria-label="rename conversation"
+            title="rename"
+            onClick={startEdit}
+            css={{
+              position: "absolute",
+              top: 8,
+              right: 8,
+              width: 26,
+              height: 26,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              borderRadius: 4,
+              background: "transparent",
+              color: theme.colors.text.muted,
+              cursor: "pointer",
+              "&:hover": {
+                background: theme.colors.background.main,
+                color: theme.colors.text.main,
+              },
+            }}
+          >
+            <span className="material-icons-outlined" css={{ fontSize: 16 }}>
+              edit
+            </span>
+          </button>
+        )}
+      </div>
+    </SwipeRow>
   );
 };
 
