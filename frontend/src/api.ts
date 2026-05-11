@@ -98,6 +98,10 @@ export const api = {
     }).then((r) => {
       if (!r.ok) throw new Error(`${r.status}`);
     }),
+  deleteMe: () =>
+    fetch("/api/me", { method: "DELETE", credentials: "include" }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+    }),
   modelCaps: (model: string) =>
     fetch(`/api/models/caps?model=${encodeURIComponent(model)}`, {
       credentials: "include",

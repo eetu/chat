@@ -1,9 +1,14 @@
 import { useTheme } from "@emotion/react";
-import { Link, useNavigate, useParams } from "@tanstack/react-router";
+import {
+  Link,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "@tanstack/react-router";
 import { memo, useCallback } from "react";
 import useSWR from "swr";
 
-import { api, Conversation } from "../api";
+import { api, Conversation, Me } from "../api";
 import { mq } from "../mq";
 import SwipeRow from "./SwipeRow";
 import Wordmark from "./Wordmark";
@@ -23,6 +28,9 @@ const Sidebar = ({ onClose }: Props) => {
     "/api/conversations",
     api.listConversations,
   );
+  const { data: me } = useSWR<Me>("/api/me", api.me);
+  const location = useLocation();
+  const onSettings = location.pathname === "/settings";
 
   const onNewChat = useCallback(async () => {
     const conv = await api.createConversation();
@@ -168,6 +176,56 @@ const Sidebar = ({ onClose }: Props) => {
           </SwipeRow>
         ))}
       </div>
+
+      {me && (
+        <button
+          type="button"
+          aria-label="open settings"
+          aria-current={onSettings ? "page" : undefined}
+          onClick={() => navigate({ to: "/settings" })}
+          css={{
+            width: "100%",
+            padding: "10px 12px 12px 16px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+            border: "none",
+            borderTop: `1px solid ${theme.colors.border}`,
+            background: onSettings
+              ? theme.colors.activity.onSoft
+              : "transparent",
+            color: theme.colors.text.main,
+            cursor: "pointer",
+            textAlign: "left",
+            "&:hover": { background: theme.colors.background.main },
+          }}
+        >
+          <span
+            css={{
+              ...theme.typography.body2,
+              color: theme.colors.text.main,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              flex: 1,
+            }}
+            title={me.username}
+          >
+            {me.username}
+          </span>
+          <span
+            className="material-icons-outlined"
+            aria-hidden
+            css={{
+              fontSize: 20,
+              color: theme.colors.text.muted,
+            }}
+          >
+            chevron_right
+          </span>
+        </button>
+      )}
     </aside>
   );
 };
