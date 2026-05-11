@@ -4,6 +4,7 @@ import { createRootRoute, Outlet, useLocation } from "@tanstack/react-router";
 import { useState } from "react";
 import { useMediaQuery } from "usehooks-ts";
 
+import HealthBanner from "../components/HealthBanner";
 import LoginGate from "../components/LoginGate";
 import Sidebar from "../components/Sidebar";
 
@@ -112,6 +113,7 @@ const RootLayout = () => {
               </span>
             </button>
           )}
+          <HealthBanner />
           <Outlet />
         </main>
       </div>
