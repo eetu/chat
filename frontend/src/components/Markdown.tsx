@@ -1,7 +1,14 @@
 import "katex/dist/katex.min.css";
 
 import { Global, useTheme } from "@emotion/react";
-import { ComponentProps, memo, useRef, useState } from "react";
+import {
+  ComponentProps,
+  isValidElement,
+  memo,
+  ReactNode,
+  useRef,
+  useState,
+} from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
@@ -26,10 +33,27 @@ const balanceFences = (s: string) => {
   return s;
 };
 
+/**
+ * Pull the fenced language hint off the inner `<code>` element that
+ * react-markdown renders inside a `<pre>`. The plugin attaches the
+ * language via `className="language-foo"`. Returns `null` when the
+ * fence had no language hint at all (e.g. plain ``` without a tag).
+ */
+const extractLanguage = (children: ReactNode): string | null => {
+  if (!isValidElement(children)) return null;
+  const className = (children.props as { className?: string }).className ?? "";
+  const match = /language-([\w+-]+)/.exec(className);
+  if (!match) return null;
+  // highlight.js maps a handful of common aliases; keep what the
+  // fence said, but tidy `language-` off for display.
+  return match[1];
+};
+
 const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
   const theme = useTheme();
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
+  const language = extractLanguage(children);
 
   const handleCopy = async () => {
     const text = preRef.current?.textContent ?? "";
@@ -48,6 +72,30 @@ const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
       <pre ref={preRef} {...rest}>
         {children}
       </pre>
+      {language && (
+        <span
+          aria-hidden
+          css={{
+            position: "absolute",
+            top: 6,
+            left: 10,
+            padding: "1px 6px",
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+            fontSize: 10,
+            letterSpacing: 0.3,
+            textTransform: "lowercase",
+            color: theme.colors.text.muted,
+            background: theme.colors.background.main,
+            border: `1px solid ${theme.colors.border}`,
+            borderRadius: 4,
+            opacity: 0.85,
+            pointerEvents: "none",
+          }}
+        >
+          {language}
+        </span>
+      )}
       <button
         type="button"
         onClick={handleCopy}
