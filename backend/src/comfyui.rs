@@ -143,15 +143,23 @@ where
         .to_string();
     let client_id = Uuid::new_v4().to_string();
 
-    // 1. Upload reference image.
+    // 1. Upload reference image. The MIME comes from sniffing the bytes
+    // themselves — frontend currently sends JPEG, earlier paths sent PNG,
+    // and accepting either keeps ComfyUI's LoadImage node happy without
+    // a hidden re-encode.
     let bytes = STANDARD.decode(input_image_b64).map_err(|e| {
         tracing::warn!("base64 decode of user image failed: {e}");
         ChatStreamError::EmptyImage
     })?;
-    let upload_filename = format!("chat-{}.png", Uuid::new_v4());
+    let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
+        tracing::warn!("rejecting unsupported image format for kontext upload");
+        ChatStreamError::EmptyImage
+    })?;
+    let ext = crate::image_kind::extension(mime);
+    let upload_filename = format!("chat-{}.{ext}", Uuid::new_v4());
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name(upload_filename.clone())
-        .mime_str("image/png")
+        .mime_str(mime)
         .map_err(ChatStreamError::Http)?;
     let form = reqwest::multipart::Form::new()
         .text("overwrite", "true")

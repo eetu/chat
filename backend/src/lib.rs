@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod comfyui;
 pub mod handlers;
+pub mod image_kind;
 pub mod oidc;
 pub mod ollama;
 pub mod personas;
@@ -13,7 +14,25 @@ use std::sync::Arc;
 use actix_cors::Cors;
 use actix_files::Files;
 use actix_session::{config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware};
-use actix_web::{cookie::Key, middleware, web, App, HttpServer};
+use actix_web::{cookie::Key, middleware, middleware::DefaultHeaders, web, App, HttpServer};
+
+/// Content-Security-Policy applied to every response. `style-src` allows
+/// inline because Emotion injects styles at runtime; the google fonts +
+/// material icons origins are the only third parties the SPA reaches.
+/// `connect-src 'self'` keeps fetch/SSE same-origin; the vite dev server
+/// proxies upstream targets so no wildcard is needed for development.
+const CSP: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self'; ",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; ",
+    "font-src 'self' data: https://fonts.gstatic.com; ",
+    "img-src 'self' data: blob:; ",
+    "connect-src 'self'; ",
+    "frame-ancestors 'none'; ",
+    "base-uri 'self'; ",
+    "object-src 'none'; ",
+    "form-action 'self'",
+);
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -87,6 +106,13 @@ pub fn create_app(
     App::new()
         .app_data(web::Data::new(state))
         .wrap(middleware::Logger::default())
+        .wrap(
+            DefaultHeaders::new()
+                .add(("Content-Security-Policy", CSP))
+                .add(("X-Content-Type-Options", "nosniff"))
+                .add(("Referrer-Policy", "same-origin"))
+                .add(("X-Frame-Options", "DENY")),
+        )
         .wrap(Cors::permissive())
         .wrap(
             SessionMiddleware::builder(CookieSessionStore::default(), session_key)
@@ -106,6 +132,7 @@ pub fn create_app(
         .service(
             web::scope("/api")
                 .route("/me", web::get().to(auth::me))
+                .route("/me", web::delete().to(auth::delete_me))
                 .route("/models", web::get().to(handlers::list_models))
                 .route("/models/caps", web::get().to(handlers::model_caps))
                 .route("/personas", web::get().to(handlers::list_personas))

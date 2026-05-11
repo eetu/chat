@@ -480,6 +480,17 @@ impl Storage {
         Ok(())
     }
 
+    /// Remove a user and everything that depends on them. FK cascades
+    /// from `users(sub)` → `conversations.user_sub` →
+    /// `messages.conv_id` → `message_images.message_id` so the single
+    /// DELETE pulls every blob and row attributable to the user. Used
+    /// by the account self-delete endpoint.
+    pub fn delete_user(&self, user_sub: &str) -> Result<(), StorageError> {
+        let conn = self.inner.lock().unwrap();
+        conn.execute("DELETE FROM users WHERE sub = ?1", [user_sub])?;
+        Ok(())
+    }
+
     pub fn purge_older_than(&self, ttl_days: u32) -> Result<usize, StorageError> {
         let cutoff = Utc::now().timestamp() - i64::from(ttl_days) * 86_400;
         let conn = self.inner.lock().unwrap();
@@ -492,8 +503,9 @@ impl Storage {
 }
 
 /// Decode a slice of raw base64 image strings (no `data:` prefix) and
-/// insert them into `message_images` keyed by index. Returns Invalid
-/// when any input fails to decode.
+/// insert them into `message_images` keyed by index. The stored MIME is
+/// sniffed from the bytes themselves so payloads with a spoofed claim
+/// or unsupported format are rejected at the boundary.
 fn insert_message_images(
     conn: &Connection,
     message_id: i64,
@@ -503,13 +515,18 @@ fn insert_message_images(
     use base64::Engine;
     let mut stmt = conn.prepare(
         "INSERT INTO message_images(message_id, idx, mime, bytes)
-         VALUES(?1, ?2, 'image/png', ?3)",
+         VALUES(?1, ?2, ?3, ?4)",
     )?;
     for (idx, s) in b64_images.iter().enumerate() {
         let bytes = B64
             .decode(s.as_bytes())
             .map_err(|e| StorageError::Invalid(format!("base64 decode: {e}")))?;
-        stmt.execute(params![message_id, idx as i64, bytes])?;
+        let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
+            StorageError::Invalid(
+                "unsupported image format — accepts png, jpeg, webp, gif".into(),
+            )
+        })?;
+        stmt.execute(params![message_id, idx as i64, mime, bytes])?;
     }
     Ok(())
 }
@@ -717,11 +734,23 @@ mod tests {
     }
 
     #[test]
+    fn append_message_rejects_non_image_bytes() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let bogus = B64.encode(b"not an image at all");
+        let err = s
+            .append_message("a", &c.id, "user", "img", std::slice::from_ref(&bogus))
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Invalid(_)));
+    }
+
+    #[test]
     fn delete_conversation_cascades_messages_and_images() {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let raw = B64.encode(b"x");
+        let raw = B64.encode(b"\x89PNG\r\n\x1a\nfake");
         let mid = s
             .append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw))
             .unwrap();
@@ -729,6 +758,25 @@ mod tests {
         // Messages + images are gone via FK cascade.
         let err = s.get_message_image_bytes("a", &c.id, mid, 0).unwrap_err();
         assert!(matches!(err, StorageError::NotFound | StorageError::Forbidden));
+    }
+
+    #[test]
+    fn delete_user_cascades_everything() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let raw = B64.encode(b"\x89PNG\r\n\x1a\nfake");
+        s.append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw))
+            .unwrap();
+        s.delete_user("a").unwrap();
+        let err = s.list_messages("a", &c.id).unwrap_err();
+        // The conversation row is gone, so get_conversation hits NotFound
+        // before checking ownership.
+        assert!(matches!(err, StorageError::NotFound));
+        // Other user untouched.
+        s.create_conversation("b", "still here", None).unwrap();
+        let bob_convs = s.list_conversations("b").unwrap();
+        assert_eq!(bob_convs.len(), 1);
     }
 
     #[test]

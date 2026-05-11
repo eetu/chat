@@ -250,3 +250,25 @@ pub async fn logout(session: Session) -> HttpResponse {
 pub async fn me(user: AuthUser) -> HttpResponse {
     HttpResponse::Ok().json(user)
 }
+
+/// DELETE /api/me — irreversible account deletion. Drops the user row,
+/// which cascades through `conversations` → `messages` → `message_images`
+/// thanks to the FK chain set up in `storage.rs`. Session is purged after
+/// the delete completes so the response leaves the client logged out.
+pub async fn delete_me(
+    state: web::Data<Arc<AppState>>,
+    session: Session,
+    user: AuthUser,
+) -> HttpResponse {
+    match state.storage.delete_user(&user.sub) {
+        Ok(()) => {
+            session.purge();
+            tracing::info!("account self-deleted: sub={}", user.sub);
+            HttpResponse::NoContent().finish()
+        }
+        Err(e) => {
+            tracing::error!("delete_user failed for {}: {e}", user.sub);
+            HttpResponse::InternalServerError().finish()
+        }
+    }
+}
