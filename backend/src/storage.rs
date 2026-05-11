@@ -587,6 +587,159 @@ fn migrate_attachments_to_blobs(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::{engine::general_purpose::STANDARD as B64, Engine};
+
+    fn fresh() -> Storage {
+        Storage::open(Path::new(":memory:")).expect("in-memory db")
+    }
+
+    fn seed_users(s: &Storage) {
+        s.upsert_user("a", "alice").unwrap();
+        s.upsert_user("b", "bob").unwrap();
+    }
+
+    #[test]
+    fn list_conversations_is_per_user() {
+        let s = fresh();
+        seed_users(&s);
+        s.create_conversation("a", "alice's chat", None).unwrap();
+        s.create_conversation("b", "bob's chat", None).unwrap();
+        let alice = s.list_conversations("a").unwrap();
+        let bob = s.list_conversations("b").unwrap();
+        assert_eq!(alice.len(), 1);
+        assert_eq!(bob.len(), 1);
+        assert_eq!(alice[0].title, "alice's chat");
+        assert_eq!(bob[0].title, "bob's chat");
+    }
+
+    #[test]
+    fn get_conversation_forbids_cross_user_access() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let err = s.get_conversation("b", &c.id).unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+    }
+
+    #[test]
+    fn delete_conversation_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let err = s.delete_conversation("b", &c.id).unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+        // Bob's attempted delete must not have removed the row.
+        s.get_conversation("a", &c.id).expect("alice's convo still readable");
+    }
+
+    #[test]
+    fn list_messages_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        s.append_message("a", &c.id, "user", "hi", &[]).unwrap();
+        let err = s.list_messages("b", &c.id).unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+    }
+
+    #[test]
+    fn append_message_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let err = s.append_message("b", &c.id, "user", "hi", &[]).unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+        // No row was inserted.
+        let alice_msgs = s.list_messages("a", &c.id).unwrap();
+        assert!(alice_msgs.is_empty());
+    }
+
+    #[test]
+    fn delete_message_and_after_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let mid = s.append_message("a", &c.id, "user", "hi", &[]).unwrap();
+        let err = s
+            .delete_message_and_after("b", &c.id, mid)
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+        let alice_msgs = s.list_messages("a", &c.id).unwrap();
+        assert_eq!(alice_msgs.len(), 1);
+    }
+
+    #[test]
+    fn set_conversation_model_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let err = s
+            .set_conversation_model("b", &c.id, "evil")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+    }
+
+    #[test]
+    fn set_conversation_title_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let err = s
+            .set_conversation_title("b", &c.id, "pwned")
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+        let again = s.get_conversation("a", &c.id).unwrap();
+        assert_eq!(again.title, "t");
+    }
+
+    #[test]
+    fn get_message_image_bytes_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let raw = b"\x89PNG\r\n\x1a\nfake".to_vec();
+        let b64 = B64.encode(&raw);
+        let mid = s.append_message("a", &c.id, "user", "img", &[b64]).unwrap();
+        let err = s
+            .get_message_image_bytes("b", &c.id, mid, 0)
+            .unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
+        // Bytes still readable by the owner — assertion guards against an
+        // accidental delete during the forbidden path.
+        let (bytes, mime) = s
+            .get_message_image_bytes("a", &c.id, mid, 0)
+            .unwrap();
+        assert_eq!(bytes, raw);
+        assert_eq!(mime, "image/png");
+    }
+
+    #[test]
+    fn delete_conversation_cascades_messages_and_images() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let raw = B64.encode(b"x");
+        let mid = s
+            .append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw))
+            .unwrap();
+        s.delete_conversation("a", &c.id).unwrap();
+        // Messages + images are gone via FK cascade.
+        let err = s.get_message_image_bytes("a", &c.id, mid, 0).unwrap_err();
+        assert!(matches!(err, StorageError::NotFound | StorageError::Forbidden));
+    }
+
+    #[test]
+    fn unknown_conversation_returns_not_found_not_forbidden() {
+        let s = fresh();
+        seed_users(&s);
+        let err = s.get_conversation("a", "no-such-id").unwrap_err();
+        assert!(matches!(err, StorageError::NotFound));
+    }
+}
+
 pub fn start_ttl_loop(state: Arc<AppState>) {
     tokio::spawn(async move {
         let interval = Duration::from_secs(3600);
