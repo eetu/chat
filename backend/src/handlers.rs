@@ -276,6 +276,9 @@ pub async fn chat(
     body: web::Json<ChatBody>,
 ) -> Result<sse::Sse<ReceiverStream<Result<sse::Event, std::convert::Infallible>>>, actix_web::Error>
 {
+    if state.settings.chat_rate_per_min > 0 && !state.chat_limit.check(&user.sub) {
+        return Err(rate_limited_actix());
+    }
     let conv = state
         .storage
         .get_conversation(&user.sub, &body.conv_id)
@@ -382,10 +385,25 @@ pub async fn chat(
             .as_ref()
             .and(body.images.as_ref().and_then(|v| v.first().cloned()));
         let use_kontext = kontext_input.is_some();
+        let image_sem = state.image_sem.clone();
         tokio::spawn(async move {
+            // Hold a permit for the duration of this image job. With the
+            // default semaphore size of 1 this serialises GPU work so we
+            // don't OOM when two clients send at once. Permit drops on
+            // return via `_permit`. If the semaphore is closed the job
+            // is silently abandoned — should never happen in practice.
+            let _permit = match image_sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("image semaphore closed: {e}");
+                    return;
+                }
+            };
             // VRAM coordination: Kontext FP8 (~12 GB) cannot share host
             // memory with chat / refiner models on a 24 GB box. Tell
             // Ollama to drop the chat model before invoking ComfyUI.
+            // Evict only after holding the permit so concurrent senders
+            // don't trigger redundant eviction churn while queued.
             if use_kontext {
                 ollama::evict(&state_clone, &model_for_gen).await;
             }
@@ -697,6 +715,16 @@ fn friendly_image_error(e: &ollama::ChatStreamError) -> String {
             }
         }
     }
+}
+
+fn rate_limited_actix() -> actix_web::Error {
+    actix_web::error::InternalError::from_response(
+        "rate limited",
+        HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", "60"))
+            .json(serde_json::json!({"error": "too many requests"})),
+    )
+    .into()
 }
 
 fn storage_actix_err(e: StorageError) -> actix_web::Error {

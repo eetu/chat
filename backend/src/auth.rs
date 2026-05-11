@@ -3,6 +3,22 @@ use std::sync::Arc;
 
 use actix_session::Session;
 use actix_web::{web, FromRequest, HttpRequest, HttpResponse, ResponseError};
+
+/// Extract a key for rate-limiting unauthenticated requests. Prefer the
+/// client IP recovered from the connection; fall back to a constant
+/// bucket so a forward proxy that hides the peer address still gets
+/// limited globally rather than left unbounded.
+fn rate_key(req: &HttpRequest) -> String {
+    req.peer_addr()
+        .map(|a| a.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn rate_limited_resp() -> HttpResponse {
+    HttpResponse::TooManyRequests()
+        .insert_header(("Retry-After", "60"))
+        .json(serde_json::json!({"error": "too many requests"}))
+}
 use openidconnect::{Nonce, PkceCodeVerifier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -84,7 +100,11 @@ pub async fn login(
     state: web::Data<Arc<AppState>>,
     session: Session,
     query: web::Query<LoginQuery>,
+    req: HttpRequest,
 ) -> HttpResponse {
+    if state.settings.auth_rate_per_min > 0 && !state.auth_limit.check(&rate_key(&req)) {
+        return rate_limited_resp();
+    }
     let next = sanitize_next(query.next.as_deref());
 
     if let Some(oidc) = &state.oidc {
@@ -141,7 +161,11 @@ pub async fn callback(
     state: web::Data<Arc<AppState>>,
     session: Session,
     query: web::Query<CallbackQuery>,
+    req: HttpRequest,
 ) -> HttpResponse {
+    if state.settings.auth_rate_per_min > 0 && !state.auth_limit.check(&rate_key(&req)) {
+        return rate_limited_resp();
+    }
     let oidc = match &state.oidc {
         Some(o) => o,
         None => {

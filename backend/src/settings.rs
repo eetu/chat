@@ -19,6 +19,14 @@ pub struct Settings {
     pub session_key_hex: String,
     pub oidc: Option<OidcSettings>,
     pub dev_auth: bool,
+    /// Per-user token-bucket rate for `/api/chat`. 0 disables the limit.
+    pub chat_rate_per_min: u32,
+    /// Per-IP token-bucket rate for `/auth/login` + `/auth/callback`. 0
+    /// disables the limit.
+    pub auth_rate_per_min: u32,
+    /// Max concurrent image-generation jobs. VRAM-bound on Apple Silicon;
+    /// default 1.
+    pub image_gen_concurrency: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +55,19 @@ impl Settings {
         let session_key_hex = env::var("SESSION_KEY")
             .unwrap_or_else(|_| "0".repeat(128));
         let dev_auth = env::var("DEV_AUTH").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let chat_rate_per_min = env::var("CHAT_RATE_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        let auth_rate_per_min = env::var("AUTH_RATE_PER_MIN")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20);
+        let image_gen_concurrency = env::var("IMAGE_GEN_CONCURRENCY")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(1);
 
         let oidc = match (
             env::var("OIDC_ISSUER"),
@@ -74,6 +95,9 @@ impl Settings {
             session_key_hex,
             oidc,
             dev_auth,
+            chat_rate_per_min,
+            auth_rate_per_min,
+            image_gen_concurrency,
         }
     }
 
@@ -90,6 +114,9 @@ impl Settings {
             session_key_hex: "0".repeat(128),
             oidc: None,
             dev_auth: true,
+            chat_rate_per_min: 0,
+            auth_rate_per_min: 0,
+            image_gen_concurrency: 1,
         }
     }
 }

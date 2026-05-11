@@ -4,6 +4,7 @@ pub mod handlers;
 pub mod oidc;
 pub mod ollama;
 pub mod personas;
+pub mod ratelimit;
 pub mod settings;
 pub mod storage;
 
@@ -20,8 +21,10 @@ use tokio::sync::Mutex;
 
 use oidc::OidcContext;
 use ollama::ModelCapabilities;
+use ratelimit::RateLimiter;
 use settings::Settings;
 use storage::Storage;
+use tokio::sync::Semaphore;
 
 const CAPS_TTL: Duration = Duration::from_secs(300);
 
@@ -58,6 +61,12 @@ pub struct AppState {
     pub storage: Storage,
     pub oidc: Option<OidcContext>,
     pub caps_cache: CapsCache,
+    pub chat_limit: RateLimiter,
+    pub auth_limit: RateLimiter,
+    /// Bounded permit pool guarding image generation. Holding a permit
+    /// gates concurrent ComfyUI / Ollama image jobs so VRAM-bound hosts
+    /// don't OOM when multiple users send at once.
+    pub image_sem: Arc<Semaphore>,
 }
 
 pub fn create_app(
@@ -189,12 +198,18 @@ pub async fn run_server() -> std::io::Result<()> {
         None => None,
     };
 
+    let chat_rate = settings.chat_rate_per_min;
+    let auth_rate = settings.auth_rate_per_min;
+    let image_concurrency = settings.image_gen_concurrency;
     let state = Arc::new(AppState {
         settings,
         http_client: reqwest::Client::new(),
         storage,
         oidc,
         caps_cache: CapsCache::new(),
+        chat_limit: RateLimiter::per_minute(chat_rate),
+        auth_limit: RateLimiter::per_minute(auth_rate),
+        image_sem: Arc::new(Semaphore::new(image_concurrency)),
     });
 
     // Image generation can take >1 minute. Anything older than 5 still
@@ -225,5 +240,8 @@ pub fn create_test_state() -> Arc<AppState> {
         storage,
         oidc: None,
         caps_cache: CapsCache::new(),
+        chat_limit: RateLimiter::per_minute(0),
+        auth_limit: RateLimiter::per_minute(0),
+        image_sem: Arc::new(Semaphore::new(1)),
     })
 }
