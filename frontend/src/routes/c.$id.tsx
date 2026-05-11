@@ -36,6 +36,7 @@ const ChatView = () => {
     cancelPending,
     deleteFrom,
     regenerate,
+    editAndResend,
   } = useChat(id);
 
   // A pending assistant row means an image generation is still churning —
@@ -141,6 +142,24 @@ const ChatView = () => {
     stickRef.current = true;
     setShowJump(false);
     void send(content, model ?? undefined, images, mode, refine, persona);
+  };
+
+  /**
+   * Edit a past user message and re-run from there. Truncates everything
+   * after that row, then sends the new content with the original images
+   * carried forward. Mode is inferred from attachments — same heuristic
+   * the regenerate path uses.
+   */
+  const onEdit = (id: number, newContent: string) => {
+    const idx = messages.findIndex((m) => m.id === id);
+    if (idx === -1) return;
+    const target = messages[idx];
+    const imgCount = (target.image_count ?? 0) + (target.images?.length ?? 0);
+    const mode: "chat" | "image" | undefined =
+      imgCount > 0 ? "image" : undefined;
+    stickRef.current = true;
+    setShowJump(false);
+    void editAndResend(id, newContent, model ?? undefined, mode);
   };
 
   /**
@@ -299,6 +318,7 @@ const ChatView = () => {
               onDeleteFrom={deleteFrom}
               onRegenerate={regenerate}
               onRemix={status?.img2img_available ? onRemix : undefined}
+              onEdit={onEdit}
               busy={busy}
             />
           ))}

@@ -1,5 +1,5 @@
 import { Theme, useTheme } from "@emotion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { imageUrl, Message } from "../api";
 import Markdown from "./Markdown";
@@ -32,6 +32,10 @@ type Props = {
    * image and flips it into img2img mode. Wired only on assistant rows
    * with at least one rendered image. */
   onRemix?: (src: string) => void;
+  /** Edit + resend a past user message — truncates the thread from this
+   * row and re-runs generation with the new content. Wired only on
+   * user rows. */
+  onEdit?: (id: number, newContent: string) => void;
   busy?: boolean;
 };
 
@@ -241,6 +245,7 @@ const MessageView = ({
   onDeleteFrom,
   onRegenerate,
   onRemix,
+  onEdit,
   busy,
 }: Props) => {
   const theme = useTheme();
@@ -249,6 +254,7 @@ const MessageView = ({
   // Single lightbox source shared across the user and assistant image
   // rows in this message — only one can be open at a time per bubble.
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
 
   const lightbox = lightboxSrc && (
     <Lightbox src={lightboxSrc} onClose={() => setLightboxSrc(null)} />
@@ -257,7 +263,7 @@ const MessageView = ({
   if (isUser) {
     const userHasContent = !!msg.content;
     const userHasImages = refs.length > 0;
-    const userShowActions = userHasContent || userHasImages;
+    const userShowActions = (userHasContent || userHasImages) && !editing;
     return (
       <div
         css={{
@@ -298,27 +304,39 @@ const MessageView = ({
             ))}
           </div>
         )}
-        {userHasContent && (
-          <div
-            css={{
-              maxWidth: "78%",
-              padding: "10px 14px",
-              borderRadius: theme.border.radius,
-              background: theme.colors.activity.onSoft,
-              color: theme.colors.text.main,
-              wordBreak: "break-word",
-              whiteSpace: "pre-wrap",
-              ...theme.typography.body1,
+        {editing && onEdit && typeof msg.id === "number" ? (
+          <UserMessageEditor
+            initial={msg.content}
+            onSave={(next) => {
+              setEditing(false);
+              onEdit(msg.id!, next);
             }}
-          >
-            {msg.content}
-          </div>
+            onCancel={() => setEditing(false)}
+          />
+        ) : (
+          userHasContent && (
+            <div
+              css={{
+                maxWidth: "78%",
+                padding: "10px 14px",
+                borderRadius: theme.border.radius,
+                background: theme.colors.activity.onSoft,
+                color: theme.colors.text.main,
+                wordBreak: "break-word",
+                whiteSpace: "pre-wrap",
+                ...theme.typography.body1,
+              }}
+            >
+              {msg.content}
+            </div>
+          )
         )}
         {userShowActions && (
           <MessageActions
             msg={msg}
             refs={refs}
             onDeleteFrom={onDeleteFrom}
+            onEdit={onEdit ? () => setEditing(true) : undefined}
             busy={busy}
           />
         )}
@@ -433,6 +451,116 @@ const MessageView = ({
   );
 };
 
+const UserMessageEditor = ({
+  initial,
+  onSave,
+  onCancel,
+}: {
+  initial: string;
+  onSave: (next: string) => void;
+  onCancel: () => void;
+}) => {
+  const theme = useTheme();
+  const [draft, setDraft] = useState(initial);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
+    el.focus();
+    // Place caret at the end so the user can keep typing without
+    // clearing first.
+    const end = el.value.length;
+    el.setSelectionRange(end, end);
+  }, []);
+  const canSave = draft.trim().length > 0 && draft !== initial;
+  return (
+    <div
+      css={{
+        maxWidth: "78%",
+        width: "100%",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <textarea
+        ref={taRef}
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          const el = e.currentTarget;
+          el.style.height = "auto";
+          el.style.height = `${Math.min(
+            el.scrollHeight,
+            window.innerHeight * 0.4,
+          )}px`;
+        }}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            if (canSave) onSave(draft.trim());
+          }
+        }}
+        css={{
+          ...theme.typography.body1,
+          padding: "10px 14px",
+          borderRadius: theme.border.radius,
+          border: `1px solid ${theme.colors.activity.on}`,
+          background: theme.colors.background.main,
+          color: theme.colors.text.main,
+          resize: "none",
+          overflow: "auto",
+          outline: "none",
+          fontFamily: theme.fonts.body,
+        }}
+      />
+      <div css={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+        <button
+          type="button"
+          onClick={onCancel}
+          css={{
+            ...theme.typography.caption,
+            fontFamily: theme.fonts.heading,
+            padding: "5px 10px",
+            borderRadius: 4,
+            border: `1px solid ${theme.colors.border}`,
+            background: "transparent",
+            color: theme.colors.text.muted,
+            cursor: "pointer",
+            "&:hover": { color: theme.colors.text.main },
+          }}
+        >
+          cancel
+        </button>
+        <button
+          type="button"
+          disabled={!canSave}
+          onClick={() => onSave(draft.trim())}
+          css={{
+            ...theme.typography.caption,
+            fontFamily: theme.fonts.heading,
+            padding: "5px 10px",
+            borderRadius: 4,
+            border: `1px solid ${theme.colors.activity.on}`,
+            background: canSave ? theme.colors.activity.on : "transparent",
+            color: canSave ? "#fff" : theme.colors.activity.on,
+            cursor: "pointer",
+            transition: "background 120ms ease, color 120ms ease",
+            "&:disabled": { opacity: 0.5, cursor: "default" },
+          }}
+        >
+          save and resend
+        </button>
+      </div>
+    </div>
+  );
+};
+
 /// Compact action row shown only on assistant rows whose generation
 /// errored — lets the user retry (re-runs the prior user turn) or remove
 /// the failed bubble. Hidden on still-pending rows; those use the stop
@@ -485,6 +613,7 @@ const MessageActions = ({
   onDeleteFrom,
   onRegenerate,
   onRemix,
+  onEdit,
   busy,
 }: {
   msg: DisplayMessage;
@@ -492,6 +621,7 @@ const MessageActions = ({
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
   onRemix?: (src: string) => void;
+  onEdit?: () => void;
   busy?: boolean;
 }) => {
   const theme = useTheme();
@@ -560,6 +690,14 @@ const MessageActions = ({
           onClick={() => onRemix(firstImage.src)}
           label="remix as new prompt"
           icon="auto_fix_high"
+          theme={theme}
+        />
+      )}
+      {onEdit && canMutate && msg.role === "user" && (
+        <ActionButton
+          onClick={() => onEdit()}
+          label="edit and resend"
+          icon="edit"
           theme={theme}
         />
       )}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 
-import { api, Message, streamChat } from "../api";
+import { api, imageUrl, Message, streamChat } from "../api";
 
 type LiveMessage = Pick<Message, "role" | "content"> & {
   id?: number;
@@ -270,6 +270,66 @@ export function useChat(convId: string | undefined) {
     [convId, mutate],
   );
 
+  const editAndResend = useCallback(
+    async (
+      messageId: number,
+      newContent: string,
+      model?: string,
+      mode?: "chat" | "image",
+      refine?: boolean,
+      persona?: string,
+    ) => {
+      if (!convId || streaming) return;
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx === -1) return;
+      const target = messages[idx];
+      if (target.role !== "user") return;
+
+      // Carry the original attachments so the resend is a true edit, not
+      // an attachment-stripping reset. Optimistic rows already hold base64;
+      // persisted rows hand them out lazily through `imageUrl(...)`.
+      let images: string[] | undefined;
+      if (target.images && target.images.length > 0) {
+        images = target.images;
+      } else if (target.image_count && target.image_count > 0) {
+        try {
+          images = await Promise.all(
+            Array.from({ length: target.image_count }, async (_, i) => {
+              const blob = await (
+                await fetch(imageUrl(convId, messageId, i), {
+                  credentials: "include",
+                })
+              ).blob();
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const r = new FileReader();
+                r.onload = () => resolve(String(r.result));
+                r.onerror = () => reject(r.error);
+                r.readAsDataURL(blob);
+              });
+              const comma = dataUrl.indexOf(",");
+              return comma >= 0 ? dataUrl.slice(comma + 1) : "";
+            }),
+          );
+        } catch (e) {
+          setError(String(e));
+          return;
+        }
+      }
+
+      try {
+        await api.deleteMessageFrom(convId, messageId);
+      } catch (e) {
+        setError(String(e));
+        return;
+      }
+      // Trim the local thread to match the truncate. `send` re-appends an
+      // optimistic user bubble right after, so the UI never flashes empty.
+      setMessages((prev) => prev.slice(0, idx));
+      await send(newContent, model, images, mode, refine, persona);
+    },
+    [convId, streaming, messages, send],
+  );
+
   const regenerate = useCallback(
     async (assistantId: number) => {
       if (!convId || streaming) return;
@@ -343,5 +403,6 @@ export function useChat(convId: string | undefined) {
     cancelPending,
     deleteFrom,
     regenerate,
+    editAndResend,
   };
 }
