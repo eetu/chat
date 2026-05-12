@@ -239,6 +239,42 @@ const ChatView = () => {
     scrollToBottom("auto");
   }, [id]);
 
+  // Scroll to a search-palette target after the thread renders. The
+  // search palette navigates with `#m-<id>`; we read that hash once
+  // history loads, find the matching row, and centre it. Auto-stick is
+  // disabled so streaming deltas don't immediately yank the view back
+  // to the bottom while the user is reading the result.
+  useEffect(() => {
+    if (!loaded) return;
+    const match = /^#m-(\d+)$/.exec(window.location.hash);
+    if (!match) return;
+    const targetId = match[1];
+    const handle = window.setTimeout(() => {
+      const el = document.querySelector(`[data-msg-id="${targetId}"]`);
+      if (!(el instanceof HTMLElement)) return;
+      stickRef.current = false;
+      setShowJump(false);
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+      // Brief outline so the user can see which row matched. Reset
+      // after the animation lands; the inline style overrides nothing
+      // else on the row.
+      const prev = el.style.boxShadow;
+      el.style.boxShadow = "0 0 0 2px var(--accent)";
+      el.style.transition = "box-shadow 200ms ease";
+      el.style.setProperty("--accent", theme.colors.activity.on);
+      fadeHandle = window.setTimeout(() => {
+        el.style.boxShadow = prev;
+      }, 1600);
+      // Drop the hash so a reload doesn't keep re-scrolling.
+      window.history.replaceState(null, "", `/c/${id}`);
+    }, 60);
+    let fadeHandle: number | null = null;
+    return () => {
+      window.clearTimeout(handle);
+      if (fadeHandle != null) window.clearTimeout(fadeHandle);
+    };
+  }, [loaded, id, theme.colors.activity.on]);
+
   // Drain a pending draft handed off from the landing page. Runs once per
   // conversation (consumedRef guard) after history has loaded — sending
   // earlier would race the empty getMessages response that overwrites

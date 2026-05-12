@@ -287,6 +287,7 @@ const MessageView = ({
     const userShowActions = (userHasContent || userHasImages) && !editing;
     return (
       <div
+        data-msg-id={typeof msg.id === "number" ? msg.id : undefined}
         css={{
           display: "flex",
           flexDirection: "column",
@@ -375,6 +376,7 @@ const MessageView = ({
 
   return (
     <div
+      data-msg-id={typeof msg.id === "number" ? msg.id : undefined}
       css={{
         marginBottom: 22,
         wordBreak: "break-word",

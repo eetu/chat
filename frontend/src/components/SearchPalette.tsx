@@ -78,7 +78,15 @@ const SearchPalette = ({ onClose }: Props) => {
   }, [query]);
 
   const openHit = (hit: SearchHit) => {
-    navigate({ to: "/c/$id", params: { id: hit.conv_id } });
+    // Hash carries the target message id so the chat route can scroll
+    // to it after history loads. Plain location.hash beats a router
+    // search param here: it survives reloads, doesn't show up in the
+    // address bar as state, and pairs with `data-msg-id` on each row.
+    navigate({
+      to: "/c/$id",
+      params: { id: hit.conv_id },
+      hash: `m-${hit.message_id}`,
+    });
     onClose();
   };
 
