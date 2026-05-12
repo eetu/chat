@@ -5,6 +5,7 @@ pub mod image_kind;
 pub mod oidc;
 pub mod ollama;
 pub mod personas;
+pub mod rag;
 pub mod ratelimit;
 pub mod settings;
 pub mod storage;
@@ -87,12 +88,16 @@ pub struct AppState {
     /// gates concurrent ComfyUI / Ollama image jobs so VRAM-bound hosts
     /// don't OOM when multiple users send at once.
     pub image_sem: Arc<Semaphore>,
+    /// Coarse cache of "does Ollama have at least one embedding-capable
+    /// model?" so `/status` doesn't walk every model on every poll.
+    pub embed_models_available: Mutex<Option<(Instant, bool)>>,
 }
 
 pub fn create_app(
     state: Arc<AppState>,
     static_dir: &str,
 ) -> App<
+
     impl actix_web::dev::ServiceFactory<
         actix_web::dev::ServiceRequest,
         Config = (),
@@ -103,6 +108,7 @@ pub fn create_app(
 > {
     let static_dir = static_dir.to_string();
     let session_key = derive_session_key(&state.settings.session_key_hex);
+    let document_limit = state.settings.max_document_bytes;
 
     App::new()
         .app_data(web::Data::new(state))
@@ -143,6 +149,32 @@ pub fn create_app(
                 .route("/personas", web::get().to(handlers::list_personas))
                 .route("/voices", web::get().to(handlers::list_voices))
                 .route("/search", web::get().to(handlers::search))
+                .service(
+                    // Document bodies are larger than the default JSON
+                    // cap. Match the per-upload byte limit + a small
+                    // header overhead so the JSON layer doesn't reject
+                    // payloads the handler is willing to accept.
+                    web::resource("/documents")
+                        .app_data(
+                            // base64-encoded binaries inflate ~33% on
+                            // the wire, so the JSON cap allows for the
+                            // raw byte limit plus that overhead plus a
+                            // small header margin.
+                            web::JsonConfig::default().limit(
+                                document_limit * 4 / 3 + 64 * 1024,
+                            ),
+                        )
+                        .route(web::get().to(handlers::list_documents))
+                        .route(web::post().to(handlers::upload_document)),
+                )
+                .route(
+                    "/documents/{id}",
+                    web::delete().to(handlers::delete_document),
+                )
+                .route(
+                    "/embedding-models",
+                    web::get().to(handlers::list_embedding_models),
+                )
                 .service(
                     web::scope("/conversations")
                         .route("", web::get().to(handlers::list_conversations))
@@ -256,6 +288,7 @@ pub async fn run_server() -> std::io::Result<()> {
         chat_limit: RateLimiter::per_minute(chat_rate),
         auth_limit: RateLimiter::per_minute(auth_rate),
         image_sem: Arc::new(Semaphore::new(image_concurrency)),
+        embed_models_available: Mutex::new(None),
     });
 
     // Image generation can take >1 minute. Anything older than 5 still
@@ -289,5 +322,6 @@ pub fn create_test_state() -> Arc<AppState> {
         chat_limit: RateLimiter::per_minute(0),
         auth_limit: RateLimiter::per_minute(0),
         image_sem: Arc::new(Semaphore::new(1)),
+        embed_models_available: Mutex::new(None),
     })
 }

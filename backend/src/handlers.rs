@@ -31,6 +31,9 @@ pub struct StatusResponse {
     /// True when PIPER_URL is set so the UI can show the read-aloud
     /// affordance on assistant messages.
     pub voice_out_available: bool,
+    /// True when EMBEDDING_MODEL is set so the UI can offer document
+    /// uploads and surface a RAG indicator.
+    pub rag_available: bool,
 }
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -42,6 +45,36 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
     } else {
         "none"
     };
+    // RAG is gated on Ollama actually exposing at least one
+    // embedding-capable model. Cached coarsely so /status polls don't
+    // re-walk /api/show for every model every 20 seconds. Upstream
+    // failures fall back to "not available" rather than poisoning the
+    // surface with a stale-true.
+    const EMBED_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+    let rag_available = {
+        let cached = {
+            let guard = state.embed_models_available.lock().await;
+            guard.and_then(|(at, value)| {
+                if at.elapsed() < EMBED_TTL {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
+        };
+        match cached {
+            Some(v) => v,
+            None => {
+                let probed = ollama::list_embedding_models(&state)
+                    .await
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
+                *state.embed_models_available.lock().await =
+                    Some((std::time::Instant::now(), probed));
+                probed
+            }
+        }
+    };
     HttpResponse::Ok().json(StatusResponse {
         upstream,
         model_locked: state.settings.ollama_model_lock.is_some(),
@@ -50,6 +83,7 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         img2img_available: state.settings.comfyui_url.is_some(),
         voice_in_available: state.settings.whisper_url.is_some(),
         voice_out_available: state.settings.piper_url.is_some(),
+        rag_available,
     })
 }
 
@@ -85,13 +119,47 @@ pub async fn list_models(state: web::Data<Arc<AppState>>) -> HttpResponse {
             "models": [{ "name": locked, "locked": true }]
         }));
     }
-    match ollama::list_models(&state).await {
-        Ok(v) => HttpResponse::Ok().json(v),
+    let raw = match ollama::list_models(&state).await {
+        Ok(v) => v,
         Err(e) => {
             tracing::error!("list_models upstream failed: {e}");
-            HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}))
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    };
+    // Filter out embedding-only models — they have no chat surface and
+    // just clutter the picker. Capability lookups go through the
+    // existing caps cache so this stays cheap on warm paths.
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    if let Some(arr) = raw.get("models").and_then(|v| v.as_array()) {
+        for m in arr {
+            let Some(name) = m.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let caps = if let Some(c) = state.caps_cache.get(name).await {
+                c
+            } else {
+                match ollama::show_capabilities(&state, name).await {
+                    Ok(c) => {
+                        state
+                            .caps_cache
+                            .set(name.to_string(), c.clone())
+                            .await;
+                        c
+                    }
+                    Err(_) => ollama::ModelCapabilities::default(),
+                }
+            };
+            let has_embedding = caps.capabilities.iter().any(|c| c == "embedding");
+            let has_chat = caps.capabilities.is_empty()
+                || caps.capabilities.iter().any(|c| c == "completion");
+            if has_embedding && !has_chat {
+                continue;
+            }
+            out.push(m.clone());
         }
     }
+    HttpResponse::Ok().json(serde_json::json!({ "models": out }))
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,10 +378,206 @@ pub struct ChatBody {
     /// user prompt + attached image stays in place.
     #[serde(default)]
     pub retry_assistant_id: Option<i64>,
+    /// Regenerate-from-user mode: when set, the backend trims every
+    /// row strictly after this user turn (the assistant reply, if
+    /// any, and anything later) and re-runs generation off the
+    /// existing user message. Used by the regenerate button under
+    /// user bubbles so the user can rerun even when no assistant
+    /// reply landed (e.g. they hit stop pre-stream).
+    #[serde(default)]
+    pub regenerate_from_user: Option<i64>,
 }
 
 pub async fn list_personas() -> HttpResponse {
     HttpResponse::Ok().json(personas::list())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DocumentUploadBody {
+    pub name: String,
+    pub mime: Option<String>,
+    /// Base64-encoded raw bytes of the file. Backend sniffs the
+    /// content (PDF vs UTF-8 text) and extracts text accordingly.
+    pub content_b64: String,
+    /// Optional override of the embedding model. Falls back to
+    /// `EMBEDDING_MODEL` from settings when unset.
+    pub model: Option<String>,
+}
+
+pub async fn list_embedding_models(
+    state: web::Data<Arc<AppState>>,
+    _user: AuthUser,
+) -> HttpResponse {
+    match ollama::list_embedding_models(&state).await {
+        Ok(models) => HttpResponse::Ok().json(serde_json::json!({ "models": models })),
+        Err(e) => {
+            tracing::warn!("list_embedding_models failed: {e}");
+            HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": e.to_string()}))
+        }
+    }
+}
+
+/// Ingest a text document for retrieval-augmented chat: chunk, embed
+/// each chunk via Ollama, persist alongside the document row. Accepts
+/// raw text in JSON for now — PDF / markdown stays a follow-up.
+pub async fn upload_document(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    body: web::Json<DocumentUploadBody>,
+) -> HttpResponse {
+    let model = match body
+        .model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(m) => m.to_string(),
+        None => match state.settings.embedding_model.as_deref() {
+            Some(m) => m.to_string(),
+            None => {
+                return HttpResponse::BadRequest().json(serde_json::json!({
+                    "error": "embedding model required — pick one in settings",
+                }));
+            }
+        },
+    };
+    if state.settings.chat_rate_per_min > 0 && !state.chat_limit.check(&user.sub) {
+        return HttpResponse::TooManyRequests()
+            .insert_header(("Retry-After", "60"))
+            .json(serde_json::json!({"error": "too many requests"}));
+    }
+    let name = body.name.trim();
+    if name.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "name required"}));
+    }
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    let raw = match B64.decode(body.content_b64.as_bytes()) {
+        Ok(b) => b,
+        Err(e) => {
+            return HttpResponse::BadRequest().json(
+                serde_json::json!({"error": format!("base64 decode: {e}")}),
+            );
+        }
+    };
+    if raw.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "empty document"}));
+    }
+    if raw.len() > state.settings.max_document_bytes {
+        let mb = state.settings.max_document_bytes / (1024 * 1024);
+        return HttpResponse::PayloadTooLarge()
+            .json(serde_json::json!({
+                "error": format!("file exceeds {mb} MB cap"),
+            }));
+    }
+    // Sniff PDF magic, otherwise decode as UTF-8 text. PDF extraction
+    // is best-effort: image-only PDFs (no embedded text layer) come
+    // back empty and the upload is rejected below.
+    let is_pdf = raw.starts_with(b"%PDF-");
+    let (extracted_text, detected_mime): (String, &'static str) = if is_pdf {
+        match pdf_extract::extract_text_from_mem(&raw) {
+            Ok(t) => (t, "application/pdf"),
+            Err(e) => {
+                tracing::warn!("pdf extract failed for {name}: {e}");
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "could not extract pdf text"}));
+            }
+        }
+    } else {
+        match std::str::from_utf8(&raw) {
+            Ok(s) => (s.to_string(), "text/plain"),
+            Err(_) => {
+                return HttpResponse::BadRequest()
+                    .json(serde_json::json!({"error": "unsupported binary format"}));
+            }
+        }
+    };
+    let content = extracted_text.trim();
+    if content.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "no extractable text"}));
+    }
+    let mime = body
+        .mime
+        .as_deref()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or(detected_mime)
+        .to_string();
+
+    let chunks = crate::rag::chunk_text(content);
+    if chunks.is_empty() {
+        return HttpResponse::BadRequest()
+            .json(serde_json::json!({"error": "nothing to index"}));
+    }
+
+    let mut embedded: Vec<(String, Vec<f32>)> = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        match crate::ollama::embed_text(&state, &model, &chunk).await {
+            Ok(vec) if !vec.is_empty() => embedded.push((chunk, vec)),
+            Ok(_) => {
+                tracing::warn!("embed_text returned empty vector; skipping chunk");
+            }
+            Err(e) => {
+                tracing::error!("embed_text failed: {e}");
+                return HttpResponse::BadGateway()
+                    .json(serde_json::json!({"error": format!("embed failed: {e}")}));
+            }
+        }
+    }
+
+    if embedded.is_empty() {
+        return HttpResponse::BadGateway()
+            .json(serde_json::json!({"error": "no chunks embedded"}));
+    }
+
+    let doc_id = match state.storage.create_document(
+        &user.sub,
+        name,
+        &mime,
+        raw.len() as i64,
+        &model,
+    ) {
+        Ok(id) => id,
+        Err(e) => return storage_err(e),
+    };
+    if let Err(e) = state.storage.insert_chunks(doc_id, &embedded) {
+        // Best-effort rollback: drop the doc row so the user doesn't
+        // see a half-ingested entry in the list.
+        let _ = state.storage.delete_document(&user.sub, doc_id);
+        return storage_err(e);
+    }
+    match state.storage.list_documents(&user.sub) {
+        Ok(docs) => {
+            let me = docs.into_iter().find(|d| d.id == doc_id);
+            HttpResponse::Ok().json(me)
+        }
+        Err(e) => storage_err(e),
+    }
+}
+
+pub async fn list_documents(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+) -> HttpResponse {
+    match state.storage.list_documents(&user.sub) {
+        Ok(docs) => HttpResponse::Ok().json(docs),
+        Err(e) => storage_err(e),
+    }
+}
+
+pub async fn delete_document(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    path: web::Path<i64>,
+) -> HttpResponse {
+    match state.storage.delete_document(&user.sub, path.into_inner()) {
+        Ok(()) => HttpResponse::NoContent().finish(),
+        Err(e) => storage_err(e),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -590,6 +854,13 @@ pub async fn chat(
         state
             .storage
             .delete_message_and_after(&user.sub, &conv.id, retry_id)
+            .map_err(storage_actix_err)?;
+    } else if let Some(user_id) = body.regenerate_from_user {
+        // Trim everything after this user turn and re-run generation
+        // off it. The user row itself stays put.
+        state
+            .storage
+            .delete_messages_after(&user.sub, &conv.id, user_id)
             .map_err(storage_actix_err)?;
     } else {
         state
@@ -925,8 +1196,120 @@ pub async fn chat(
         return Ok(sse::Sse::from_stream(stream).with_keep_alive(std::time::Duration::from_secs(30)));
     }
 
+    let rag_user_text = body.content.clone();
     tokio::spawn(async move {
         let tx_for_delta = tx.clone();
+        // RAG injection: if the user owns any documents, embed the new
+        // user turn with each distinct embedding model used at upload
+        // time (cross-model vectors aren't comparable), rank chunks by
+        // cosine, then merge into a single top-k system message.
+        // Failures stay non-fatal — the assistant just sees the prompt
+        // without retrieved context.
+        let mut messages = messages;
+        let stored = state_clone.storage.load_user_chunks(&user_sub).ok();
+        if let Some(chunks) = stored.filter(|c| !c.is_empty()) {
+            use std::collections::HashMap;
+            let mut by_model: HashMap<String, Vec<&crate::storage::StoredChunk>> =
+                HashMap::new();
+            for ch in &chunks {
+                if ch.embedding_model.is_empty() {
+                    continue;
+                }
+                by_model
+                    .entry(ch.embedding_model.clone())
+                    .or_default()
+                    .push(ch);
+            }
+            let mut ranked: Vec<(f32, &crate::storage::StoredChunk)> = Vec::new();
+            for (model_name, group) in by_model {
+                match ollama::embed_text(
+                    &state_clone,
+                    &model_name,
+                    &rag_user_text,
+                )
+                .await
+                {
+                    Ok(query_vec) if !query_vec.is_empty() => {
+                        for ch in group {
+                            ranked.push((
+                                crate::rag::cosine(&query_vec, &ch.embedding),
+                                ch,
+                            ));
+                        }
+                    }
+                    Ok(_) => {
+                        tracing::warn!(
+                            "rag: empty query embedding for {model_name}"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "rag: embed failed ({model_name}): {e}"
+                        );
+                    }
+                }
+            }
+            ranked.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let top: Vec<_> = ranked
+                .into_iter()
+                .filter(|(score, _)| *score > 0.3)
+                .take(state_clone.settings.rag_top_k)
+                .collect();
+            if !top.is_empty() {
+                let mut prompt = String::from(
+                    "relevant context from the user's documents — cite the \
+                     source name when you reference it:\n\n",
+                );
+                for (_, ch) in &top {
+                    prompt.push_str(&format!(
+                        "[{}]\n{}\n\n",
+                        ch.document_name, ch.content
+                    ));
+                }
+                tracing::debug!(count = top.len(), "rag: injected chunks");
+                // Surface which documents were consulted so the UI can
+                // show a sources chip under the assistant turn. Dedup
+                // by name + report the best matching score per doc.
+                let mut sources: Vec<(String, f32)> = Vec::new();
+                for (score, ch) in &top {
+                    if let Some(entry) = sources
+                        .iter_mut()
+                        .find(|(name, _)| name == &ch.document_name)
+                    {
+                        if *score > entry.1 {
+                            entry.1 = *score;
+                        }
+                    } else {
+                        sources.push((ch.document_name.clone(), *score));
+                    }
+                }
+                let sources_json: Vec<serde_json::Value> = sources
+                    .iter()
+                    .map(|(name, score)| {
+                        serde_json::json!({
+                            "name": name,
+                            "score": score,
+                        })
+                    })
+                    .collect();
+                let _ = tx
+                    .send(Ok(ollama::sse_json(
+                        "context",
+                        &serde_json::json!({ "sources": sources_json }),
+                    )))
+                    .await;
+                messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".into(),
+                        content: prompt,
+                        images: None,
+                    },
+                );
+            }
+        }
         // Race the upstream stream against `tx.closed()` so a client that
         // disconnects (stop button, navigation, tab close) tears down the
         // reqwest stream immediately. Without this, Ollama keeps generating

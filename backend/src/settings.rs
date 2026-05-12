@@ -22,6 +22,17 @@ pub struct Settings {
     /// piper-tts HTTP server base URL (`POST /`). Drives the "read
     /// aloud" affordance on assistant messages.
     pub piper_url: Option<String>,
+    /// Ollama model used to embed uploaded RAG documents and the
+    /// user's prompt before retrieval. RAG is disabled when unset.
+    pub embedding_model: Option<String>,
+    /// How many top-scoring chunks to inject as system context per
+    /// chat turn. Cosine-ranked.
+    pub rag_top_k: usize,
+    /// Max accepted document size in bytes for the RAG upload path.
+    /// Text content only today — when PDF / docx extraction lands the
+    /// cap will apply post-extraction so a fat image-heavy file isn't
+    /// rejected at the door.
+    pub max_document_bytes: usize,
     pub chat_ttl_days: u32,
     pub session_key_hex: String,
     pub oidc: Option<OidcSettings>,
@@ -57,6 +68,20 @@ impl Settings {
         let comfyui_url = env::var("COMFYUI_URL").ok().filter(|s| !s.is_empty());
         let whisper_url = env::var("WHISPER_URL").ok().filter(|s| !s.is_empty());
         let piper_url = env::var("PIPER_URL").ok().filter(|s| !s.is_empty());
+        let embedding_model =
+            env::var("EMBEDDING_MODEL").ok().filter(|s| !s.is_empty());
+        let rag_top_k = env::var("RAG_TOP_K")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(4);
+        let max_document_bytes = env::var("MAX_DOCUMENT_MB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(10)
+            * 1024
+            * 1024;
         let chat_ttl_days = env::var("CHAT_TTL_DAYS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -102,6 +127,9 @@ impl Settings {
             comfyui_url,
             whisper_url,
             piper_url,
+            embedding_model,
+            rag_top_k,
+            max_document_bytes,
             chat_ttl_days,
             session_key_hex,
             oidc,
@@ -123,6 +151,9 @@ impl Settings {
             comfyui_url: None,
             whisper_url: None,
             piper_url: None,
+            embedding_model: None,
+            rag_top_k: 4,
+            max_document_bytes: 10 * 1024 * 1024,
             chat_ttl_days: 30,
             session_key_hex: "0".repeat(128),
             oidc: None,

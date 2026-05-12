@@ -37,6 +37,26 @@ pub struct Conversation {
 }
 
 #[derive(Debug, Serialize, Clone)]
+pub struct Document {
+    pub id: i64,
+    pub name: String,
+    pub mime: String,
+    pub size_bytes: i64,
+    pub chunk_count: i64,
+    pub embedding_model: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct StoredChunk {
+    pub document_id: i64,
+    pub document_name: String,
+    pub embedding_model: String,
+    pub content: String,
+    pub embedding: Vec<f32>,
+}
+
+#[derive(Debug, Serialize, Clone)]
 pub struct SearchHit {
     pub message_id: i64,
     pub conv_id: String,
@@ -103,6 +123,27 @@ impl Storage {
             );
             CREATE INDEX IF NOT EXISTS msg_images_message
                 ON message_images(message_id);
+            CREATE TABLE IF NOT EXISTS documents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_sub TEXT NOT NULL REFERENCES users(sub) ON DELETE CASCADE,
+                name TEXT NOT NULL,
+                mime TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                chunk_count INTEGER NOT NULL DEFAULT 0,
+                embedding_model TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS documents_user
+                ON documents(user_sub, created_at DESC);
+            CREATE TABLE IF NOT EXISTS document_chunks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+                position INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                embedding BLOB NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS document_chunks_doc
+                ON document_chunks(document_id);
             "#,
         )?;
         // Idempotent migration for pre-attachments databases. SQLite's
@@ -123,6 +164,17 @@ impl Storage {
         }
         migrate_attachments_to_blobs(&conn)?;
         bootstrap_search_index(&conn)?;
+        // Idempotent migration for pre-RAG-rework databases. The
+        // column carries the model name used to embed the document's
+        // chunks so retrieval can use a matching query embedding.
+        if let Err(e) = conn.execute(
+            "ALTER TABLE documents ADD COLUMN embedding_model TEXT NOT NULL DEFAULT ''",
+            [],
+        ) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                tracing::debug!("embedding_model column migration noop: {e}");
+            }
+        }
         Ok(Self { inner: Arc::new(Mutex::new(conn)) })
     }
 
@@ -415,6 +467,40 @@ impl Storage {
         Ok(out)
     }
 
+    /// Delete every message *after* the given anchor row, leaving the
+    /// anchor in place. Used by the "regenerate from this user turn"
+    /// affordance — the user message stays put and only the assistant
+    /// reply (if any) and anything after gets trimmed.
+    pub fn delete_messages_after(
+        &self,
+        user_sub: &str,
+        conv_id: &str,
+        message_id: i64,
+    ) -> Result<(), StorageError> {
+        self.get_conversation(user_sub, conv_id)?;
+        let conn = self.inner.lock().unwrap();
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![message_id, conv_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if exists.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        conn.execute(
+            "DELETE FROM messages WHERE conv_id = ?1 AND id > ?2",
+            params![conv_id, message_id],
+        )?;
+        let now = Utc::now().timestamp();
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+            params![now, conv_id],
+        )?;
+        Ok(())
+    }
+
     /// Delete the named message and every message after it in the same
     /// conversation. Used by the "delete from here" + "regenerate" UI
     /// affordances. Errors if the row doesn't belong to the user's chat.
@@ -552,6 +638,123 @@ impl Storage {
             "search executed",
         );
         Ok(hits)
+    }
+
+    pub fn create_document(
+        &self,
+        user_sub: &str,
+        name: &str,
+        mime: &str,
+        size_bytes: i64,
+        embedding_model: &str,
+    ) -> Result<i64, StorageError> {
+        let now = chrono::Utc::now().timestamp();
+        let conn = self.inner.lock().unwrap();
+        conn.execute(
+            "INSERT INTO documents(
+                user_sub, name, mime, size_bytes, chunk_count,
+                embedding_model, created_at
+             ) VALUES(?1, ?2, ?3, ?4, 0, ?5, ?6)",
+            params![user_sub, name, mime, size_bytes, embedding_model, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn insert_chunks(
+        &self,
+        document_id: i64,
+        chunks: &[(String, Vec<f32>)],
+    ) -> Result<(), StorageError> {
+        let conn = self.inner.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "INSERT INTO document_chunks(document_id, position, content, embedding)
+             VALUES(?1, ?2, ?3, ?4)",
+        )?;
+        for (idx, (content, embedding)) in chunks.iter().enumerate() {
+            let bytes = crate::rag::embedding_to_bytes(embedding);
+            stmt.execute(params![document_id, idx as i64, content, bytes])?;
+        }
+        conn.execute(
+            "UPDATE documents SET chunk_count = ?1 WHERE id = ?2",
+            params![chunks.len() as i64, document_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_documents(&self, user_sub: &str) -> Result<Vec<Document>, StorageError> {
+        let conn = self.inner.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, mime, size_bytes, chunk_count,
+                    embedding_model, created_at
+             FROM documents WHERE user_sub = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt.query_map([user_sub], |row| {
+            Ok(Document {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                mime: row.get(2)?,
+                size_bytes: row.get(3)?,
+                chunk_count: row.get(4)?,
+                embedding_model: row.get(5)?,
+                created_at: row.get(6)?,
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
+    pub fn delete_document(
+        &self,
+        user_sub: &str,
+        document_id: i64,
+    ) -> Result<(), StorageError> {
+        let conn = self.inner.lock().unwrap();
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT user_sub FROM documents WHERE id = ?1",
+                [document_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match owner {
+            None => Err(StorageError::NotFound),
+            Some(s) if s != user_sub => Err(StorageError::Forbidden),
+            _ => {
+                conn.execute(
+                    "DELETE FROM documents WHERE id = ?1",
+                    [document_id],
+                )?;
+                Ok(())
+            }
+        }
+    }
+
+    /// Load every chunk owned by `user_sub` along with its source
+    /// document's name. Retrieval ranks these in-process via cosine
+    /// against the embedded query.
+    pub fn load_user_chunks(
+        &self,
+        user_sub: &str,
+    ) -> Result<Vec<StoredChunk>, StorageError> {
+        let conn = self.inner.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT dc.document_id, d.name, d.embedding_model,
+                    dc.content, dc.embedding
+             FROM document_chunks dc
+             JOIN documents d ON d.id = dc.document_id
+             WHERE d.user_sub = ?1
+               AND d.embedding_model != ''",
+        )?;
+        let rows = stmt.query_map([user_sub], |row| {
+            let bytes: Vec<u8> = row.get(4)?;
+            Ok(StoredChunk {
+                document_id: row.get(0)?,
+                document_name: row.get(1)?,
+                embedding_model: row.get(2)?,
+                content: row.get(3)?,
+                embedding: crate::rag::embedding_from_bytes(&bytes),
+            })
+        })?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
     }
 
     /// Remove a user and everything that depends on them. FK cascades
@@ -833,6 +1036,30 @@ mod tests {
         // No row was inserted.
         let alice_msgs = s.list_messages("a", &c.id).unwrap();
         assert!(alice_msgs.is_empty());
+    }
+
+    #[test]
+    fn delete_messages_after_keeps_anchor_drops_rest() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let m1 = s.append_message("a", &c.id, "user", "first", &[]).unwrap();
+        s.append_message("a", &c.id, "assistant", "reply", &[]).unwrap();
+        s.append_message("a", &c.id, "user", "second", &[]).unwrap();
+        s.delete_messages_after("a", &c.id, m1).unwrap();
+        let remaining = s.list_messages("a", &c.id).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, m1);
+    }
+
+    #[test]
+    fn delete_messages_after_forbids_cross_user() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let m1 = s.append_message("a", &c.id, "user", "first", &[]).unwrap();
+        let err = s.delete_messages_after("b", &c.id, m1).unwrap_err();
+        assert!(matches!(err, StorageError::Forbidden));
     }
 
     #[test]

@@ -36,6 +36,7 @@ const ChatView = () => {
     cancelPending,
     deleteFrom,
     regenerate,
+    regenerateFromUser,
     editAndResend,
   } = useChat(id);
 
@@ -367,6 +368,36 @@ const ChatView = () => {
                 convId={id}
                 onDeleteFrom={deleteFrom}
                 onRegenerate={regenerate}
+                onRegenerateFromUser={(uid) => {
+                  // Pick the regeneration mode using whatever info is
+                  // available, in priority order:
+                  // 1. The reply that follows the user row (if any) —
+                  //    its image_count / status pinpoints original
+                  //    intent.
+                  // 2. The currently picked model's caps — image-only
+                  //    or chat-only models leave no choice.
+                  // 3. Default to chat.
+                  const tIdx = messages.findIndex((x) => x.id === uid);
+                  const next = tIdx >= 0 ? messages[tIdx + 1] : undefined;
+                  let modeOverride: "chat" | "image" | undefined;
+                  if (next?.role === "assistant") {
+                    const imgCount =
+                      (next.image_count ?? 0) + (next.images?.length ?? 0);
+                    modeOverride =
+                      next.status === "error" || imgCount > 0
+                        ? "image"
+                        : "chat";
+                  } else if (caps?.image_gen && !caps?.chat) {
+                    modeOverride = "image";
+                  } else if (caps?.chat && !caps?.image_gen) {
+                    modeOverride = "chat";
+                  }
+                  void regenerateFromUser(
+                    uid,
+                    model ?? undefined,
+                    modeOverride,
+                  );
+                }}
                 onRemix={status?.img2img_available ? onRemix : undefined}
                 onEdit={onEdit}
                 ttsAvailable={status?.voice_out_available ?? false}

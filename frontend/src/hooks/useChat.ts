@@ -25,6 +25,9 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
    * persisted server-side — present only on the live stream of this
    * conversation. */
   stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
+  /** Documents that fed into this turn via RAG retrieval. Surfaced as
+   * a small "sources" chip under the assistant bubble. Not persisted. */
+  sources?: Array<{ name: string; score: number }>;
 };
 
 export function useChat(convId: string | undefined) {
@@ -84,6 +87,10 @@ export function useChat(convId: string | undefined) {
       /** When set, drops the failed assistant row and re-runs generation
        * off the existing user message — no new user bubble appears. */
       retryAssistantId?: number,
+      /** When set, trims everything after this user row and re-runs
+       * generation off it. Used by the regenerate button under user
+       * bubbles. No new user bubble appears. */
+      regenerateFromUser?: number,
     ) => {
       if (!convId || streaming) return;
       const controller = new AbortController();
@@ -98,6 +105,20 @@ export function useChat(convId: string | undefined) {
           const filtered = prev.filter((m) => m.id !== retryAssistantId);
           return [
             ...filtered,
+            {
+              role: "assistant",
+              content: "",
+              status: mode === "image" ? "pending" : "done",
+            },
+          ];
+        }
+        if (regenerateFromUser != null) {
+          // Keep history up to and including this user row, drop
+          // everything after, append a fresh assistant placeholder.
+          const idx = prev.findIndex((m) => m.id === regenerateFromUser);
+          if (idx === -1) return prev;
+          return [
+            ...prev.slice(0, idx + 1),
             {
               role: "assistant",
               content: "",
@@ -127,6 +148,7 @@ export function useChat(convId: string | undefined) {
             refine,
             persona,
             retry_assistant_id: retryAssistantId,
+            regenerate_from_user: regenerateFromUser,
           },
           controller.signal,
         )) {
@@ -174,6 +196,15 @@ export function useChat(convId: string | undefined) {
                   queued: false,
                   previewDataUrl: `data:${evt.mime};base64,${evt.b64}`,
                 };
+              }
+              return next;
+            });
+          } else if (evt.type === "context") {
+            setMessages((prev) => {
+              const next = prev.slice();
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, sources: evt.sources };
               }
               return next;
             });
@@ -259,10 +290,14 @@ export function useChat(convId: string | undefined) {
     // Drop the placeholder bubble immediately. The backend cancel chain
     // (interrupt comfyui + delete pending row) is in flight; deleting
     // optimistically here means the UI isn't stuck behind that latency.
+    // Text-chat rows don't carry a `pending` status — they just sit
+    // empty until deltas arrive — so we also drop a trailing assistant
+    // with no content yet so the spinner doesn't survive the abort.
     setMessages((prev) => {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1];
-      if (last.role === "assistant" && last.status === "pending") {
+      if (last.role !== "assistant") return prev;
+      if (last.status === "pending" || !last.content) {
         return prev.slice(0, -1);
       }
       return prev;
@@ -366,6 +401,46 @@ export function useChat(convId: string | undefined) {
     [convId, streaming, messages, send],
   );
 
+  const regenerateFromUser = useCallback(
+    async (
+      userMessageId: number,
+      model?: string,
+      modeOverride?: "chat" | "image",
+    ) => {
+      if (!convId || streaming) return;
+      const idx = messages.findIndex((m) => m.id === userMessageId);
+      if (idx === -1) return;
+      const target = messages[idx];
+      if (target.role !== "user") return;
+      // Prefer the explicit override (the route passes one informed by
+      // model caps). Otherwise sniff mode from the assistant reply
+      // that follows — image-mode rows carry attachments or have
+      // status === "error". Default fallback: plain chat.
+      let inferredMode: "chat" | "image" = "chat";
+      if (modeOverride) {
+        inferredMode = modeOverride;
+      } else {
+        const next = messages[idx + 1];
+        if (next && next.role === "assistant") {
+          const nextImg = (next.image_count ?? 0) + (next.images?.length ?? 0);
+          inferredMode =
+            next.status === "error" || nextImg > 0 ? "image" : "chat";
+        }
+      }
+      await send(
+        target.content,
+        model,
+        target.images,
+        inferredMode,
+        undefined,
+        undefined,
+        undefined,
+        userMessageId,
+      );
+    },
+    [convId, streaming, messages, send],
+  );
+
   const regenerate = useCallback(
     async (assistantId: number) => {
       if (!convId || streaming) return;
@@ -439,6 +514,7 @@ export function useChat(convId: string | undefined) {
     cancelPending,
     deleteFrom,
     regenerate,
+    regenerateFromUser,
     editAndResend,
   };
 }

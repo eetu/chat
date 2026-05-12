@@ -32,6 +32,10 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
    * server-side; only present on the most recent assistant turn this
    * session. */
   stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
+  /** Docs that fed RAG retrieval this turn. Surfaced as a chip under
+   * the bubble so the user can confirm which manuals / notes the
+   * assistant consulted. */
+  sources?: Array<{ name: string; score: number }>;
 };
 
 type Props = {
@@ -39,6 +43,10 @@ type Props = {
   convId?: string;
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
+  /** Regenerate the assistant reply for THIS user message — trims
+   * everything after the user row and re-streams. Wired only on user
+   * rows. Covers the case where the user stopped before any reply. */
+  onRegenerateFromUser?: (id: number) => void;
   /** Click handler that pre-fills the composer with an existing generated
    * image and flips it into img2img mode. Wired only on assistant rows
    * with at least one rendered image. */
@@ -263,6 +271,7 @@ const MessageView = ({
   convId,
   onDeleteFrom,
   onRegenerate,
+  onRegenerateFromUser,
   onRemix,
   onEdit,
   ttsAvailable,
@@ -359,6 +368,7 @@ const MessageView = ({
             refs={refs}
             onDeleteFrom={onDeleteFrom}
             onEdit={onEdit ? () => setEditing(true) : undefined}
+            onRegenerateFromUser={onRegenerateFromUser}
             busy={busy}
           />
         )}
@@ -448,6 +458,9 @@ const MessageView = ({
         ) : (
           <Markdown>{msg.content}</Markdown>
         ))}
+      {msg.sources && msg.sources.length > 0 && (
+        <SourcesChip sources={msg.sources} theme={theme} />
+      )}
       {isError && (
         <ErrorActions
           msg={msg}
@@ -637,6 +650,7 @@ const MessageActions = ({
   refs,
   onDeleteFrom,
   onRegenerate,
+  onRegenerateFromUser,
   onRemix,
   onEdit,
   ttsAvailable,
@@ -647,6 +661,7 @@ const MessageActions = ({
   refs: ImageRef[];
   onDeleteFrom?: (id: number) => void;
   onRegenerate?: (id: number) => void;
+  onRegenerateFromUser?: (id: number) => void;
   onRemix?: (src: string) => void;
   onEdit?: () => void;
   ttsAvailable?: boolean;
@@ -963,6 +978,14 @@ const MessageActions = ({
           theme={theme}
         />
       )}
+      {onRegenerateFromUser && canMutate && msg.role === "user" && (
+        <ActionButton
+          onClick={() => onRegenerateFromUser(msg.id!)}
+          label="regenerate reply"
+          icon="refresh"
+          theme={theme}
+        />
+      )}
       {onRegenerate && canMutate && msg.role === "assistant" && (
         <ActionButton
           onClick={() => onRegenerate(msg.id!)}
@@ -1061,6 +1084,51 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
     </details>
   );
 };
+
+const SourcesChip = ({
+  sources,
+  theme,
+}: {
+  sources: Array<{ name: string; score: number }>;
+  theme: Theme;
+}) => (
+  <div
+    css={{
+      display: "flex",
+      flexWrap: "wrap",
+      alignItems: "center",
+      gap: 4,
+      ...theme.typography.caption,
+      color: theme.colors.text.muted,
+    }}
+  >
+    <span
+      className="material-icons-outlined"
+      aria-hidden
+      css={{ fontSize: 14 }}
+    >
+      menu_book
+    </span>
+    <span>from</span>
+    {sources.map((s) => (
+      <span
+        key={s.name}
+        title={`relevance ${(s.score * 100).toFixed(0)}%`}
+        css={{
+          padding: "1px 6px",
+          borderRadius: 4,
+          background: theme.colors.background.light,
+          border: `1px solid ${theme.colors.border}`,
+          color: theme.colors.text.muted,
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+          fontSize: 11,
+        }}
+      >
+        {s.name}
+      </span>
+    ))}
+  </div>
+);
 
 const StatsCaption = ({
   stats,

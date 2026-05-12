@@ -350,6 +350,81 @@ fn sanitize_title(raw: &str) -> String {
     cleaned.split_whitespace().take(8).collect::<Vec<_>>().join(" ")
 }
 
+#[derive(Debug, Deserialize)]
+struct EmbedResponse {
+    #[serde(default)]
+    embedding: Vec<f32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TagsResponse {
+    #[serde(default)]
+    models: Vec<TagsModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TagsModel {
+    #[serde(default)]
+    name: String,
+}
+
+/// Return installed Ollama models whose capabilities include
+/// "embedding". Hits `/api/tags` for the list, then `/api/show` per
+/// model (capability cache is keyed by name, so repeat calls are
+/// cheap). Errors on /api/show are logged and the model is skipped.
+pub async fn list_embedding_models(state: &AppState) -> Result<Vec<String>, reqwest::Error> {
+    let url = format!("{}/api/tags", state.settings.ollama_url.trim_end_matches('/'));
+    let res = state.http_client.get(&url).send().await?.error_for_status()?;
+    let parsed: TagsResponse = res.json().await?;
+    let mut out = Vec::new();
+    for m in parsed.models {
+        if m.name.is_empty() {
+            continue;
+        }
+        let caps = if let Some(cached) = state.caps_cache.get(&m.name).await {
+            cached
+        } else {
+            match show_capabilities(state, &m.name).await {
+                Ok(c) => {
+                    state.caps_cache.set(m.name.clone(), c.clone()).await;
+                    c
+                }
+                Err(e) => {
+                    tracing::debug!("show_capabilities({}) failed: {e}", m.name);
+                    continue;
+                }
+            }
+        };
+        if caps.capabilities.iter().any(|c| c == "embedding") {
+            out.push(m.name);
+        }
+    }
+    Ok(out)
+}
+
+/// Call Ollama's `/api/embeddings` endpoint. Returns the float vector
+/// or an empty Vec when the upstream came back malformed.
+pub async fn embed_text(
+    state: &AppState,
+    model: &str,
+    text: &str,
+) -> Result<Vec<f32>, reqwest::Error> {
+    let url = format!(
+        "{}/api/embeddings",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({ "model": model, "prompt": text });
+    let res = state
+        .http_client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await?
+        .error_for_status()?;
+    let parsed: EmbedResponse = res.json().await?;
+    Ok(parsed.embedding)
+}
+
 pub fn resolve_model(state: &AppState, requested: Option<&str>) -> String {
     state
         .settings

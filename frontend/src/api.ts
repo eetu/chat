@@ -39,6 +39,16 @@ export type Status = {
   img2img_available: boolean;
   voice_in_available: boolean;
   voice_out_available: boolean;
+  rag_available: boolean;
+};
+
+export type Document = {
+  id: number;
+  name: string;
+  mime: string;
+  size_bytes: number;
+  chunk_count: number;
+  created_at: number;
 };
 
 export type Persona = {
@@ -133,6 +143,31 @@ export const api = {
     fetch(`/api/search?q=${encodeURIComponent(q)}`, {
       credentials: "include",
     }).then(json<{ hits: SearchHit[] }>),
+  embeddingModels: () =>
+    fetch("/api/embedding-models", { credentials: "include" }).then(
+      json<{ models: string[] }>,
+    ),
+  listDocuments: () =>
+    fetch("/api/documents", { credentials: "include" }).then(json<Document[]>),
+  uploadDocument: (body: {
+    name: string;
+    content_b64: string;
+    mime?: string;
+    model?: string;
+  }) =>
+    fetch("/api/documents", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }).then(json<Document>),
+  deleteDocument: (id: number) =>
+    fetch(`/api/documents/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    }).then((r) => {
+      if (!r.ok) throw new Error(`${r.status}`);
+    }),
 };
 
 export type ChatStreamEvent =
@@ -152,7 +187,11 @@ export type ChatStreamEvent =
       tokens: number;
       prompt_tokens: number;
       tokens_per_sec: number;
-    };
+    }
+  /** Text-mode only: RAG retrieved the listed documents and injected
+   * them as system context. Fired once per turn before the first
+   * delta. */
+  | { type: "context"; sources: Array<{ name: string; score: number }> };
 
 /**
  * POST /api/chat and parse the SSE response stream produced by actix-web-lab.
@@ -171,6 +210,10 @@ export async function* streamChat(
      * generation off the existing user turn instead of appending a new
      * one. Used by the in-bubble retry button. */
     retry_assistant_id?: number;
+    /** When set, the backend trims everything strictly after this user
+     * turn and regenerates the assistant reply off it. Used by the
+     * regenerate button under user bubbles. */
+    regenerate_from_user?: number;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
@@ -250,6 +293,16 @@ function parseFrame(frame: string): ChatStreamEvent | null {
     }
   }
   if (event === "queued") return { type: "queued" };
+  if (event === "context") {
+    try {
+      const parsed = JSON.parse(data) as {
+        sources: Array<{ name: string; score: number }>;
+      };
+      return { type: "context", sources: parsed.sources ?? [] };
+    } catch {
+      return null;
+    }
+  }
   if (event === "stats") {
     try {
       const parsed = JSON.parse(data) as {
