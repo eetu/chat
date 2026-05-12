@@ -677,9 +677,27 @@ const MessageActions = ({
     };
   }, []);
 
+  const cleanupAudio = () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    try {
+      audio.pause();
+    } catch {
+      // ignore
+    }
+    const url = audio.src;
+    audioRef.current = null;
+    if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+  };
+
   const toggleTts = async () => {
     if (ttsState === "playing") {
-      audioRef.current?.pause();
+      // Drive the stop path directly instead of waiting for audio.onpause
+      // to bounce back through state — Safari fires pause without
+      // setting `ended=true` on short clips, which was incorrectly
+      // flipping state to idle mid-playback.
+      cleanupAudio();
+      setTtsState("idle");
       return;
     }
     if (ttsState === "loading") return;
@@ -721,24 +739,19 @@ const MessageActions = ({
         const objectUrl = URL.createObjectURL(ms);
         audio.src = objectUrl;
         audioRef.current = audio;
+        // Natural-end / error paths set idle. We intentionally don't
+        // listen for `pause` here — iOS Safari fires pause without
+        // setting `ended=true` on short clips, which would otherwise
+        // bounce state to idle mid-playback.
         audio.onended = () => {
-          setTtsState("idle");
           URL.revokeObjectURL(objectUrl);
-        };
-        audio.onpause = () => {
-          if (audio.ended) return;
-          setTtsState("idle");
-          URL.revokeObjectURL(objectUrl);
-          try {
-            if (ms.readyState === "open") ms.endOfStream();
-          } catch {
-            // ignore
-          }
           audioRef.current = null;
+          setTtsState("idle");
         };
         audio.onerror = () => {
-          setTtsState("idle");
           URL.revokeObjectURL(objectUrl);
+          audioRef.current = null;
+          setTtsState("idle");
         };
         ms.addEventListener("sourceopen", () => {
           let sb: SourceBuffer;
@@ -807,19 +820,18 @@ const MessageActions = ({
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audioRef.current = audio;
+      // Same iOS gotcha as the MSE branch — onpause fires before
+      // onended on Safari so we only flip on the explicit end / error
+      // events. Manual stop happens through `cleanupAudio` instead.
       audio.onended = () => {
-        setTtsState("idle");
-        URL.revokeObjectURL(url);
-      };
-      audio.onpause = () => {
-        if (audio.ended) return;
-        setTtsState("idle");
         URL.revokeObjectURL(url);
         audioRef.current = null;
+        setTtsState("idle");
       };
       audio.onerror = () => {
-        setTtsState("idle");
         URL.revokeObjectURL(url);
+        audioRef.current = null;
+        setTtsState("idle");
       };
       setTtsState("playing");
       await audio.play();
