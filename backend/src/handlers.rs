@@ -316,6 +316,34 @@ pub async fn list_personas() -> HttpResponse {
     HttpResponse::Ok().json(personas::list())
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SearchQuery {
+    pub q: String,
+    #[serde(default)]
+    pub limit: Option<usize>,
+}
+
+/// Full-text search across the user's messages. Each hit references
+/// the source conversation + a short snippet so the UI can render a
+/// command-palette style result list without a second fetch.
+pub async fn search(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    q: web::Query<SearchQuery>,
+) -> HttpResponse {
+    let trimmed = q.q.trim();
+    if trimmed.is_empty() {
+        return HttpResponse::Ok().json(serde_json::json!({ "hits": [] }));
+    }
+    // 30 is plenty for a palette — beyond that the list scrolls past
+    // useful and the FTS5 ranker's tail isn't very informative.
+    let limit = q.limit.unwrap_or(20).clamp(1, 50);
+    match state.storage.search(&user.sub, trimmed, limit) {
+        Ok(hits) => HttpResponse::Ok().json(serde_json::json!({ "hits": hits })),
+        Err(e) => storage_err(e),
+    }
+}
+
 /// List voices currently loaded on the piper-tts daemon. Proxies the
 /// upstream's own `/voices` endpoint so the UI can pick a voice that
 /// actually exists instead of guessing.

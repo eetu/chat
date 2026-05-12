@@ -36,6 +36,17 @@ pub struct Conversation {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct SearchHit {
+    pub message_id: i64,
+    pub conv_id: String,
+    pub conv_title: String,
+    pub role: String,
+    pub created_at: i64,
+    /// FTS5-rendered snippet with `[…]` markers around matched terms.
+    pub snippet: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Message {
     pub id: i64,
@@ -111,6 +122,7 @@ impl Storage {
             }
         }
         migrate_attachments_to_blobs(&conn)?;
+        bootstrap_search_index(&conn)?;
         Ok(Self { inner: Arc::new(Mutex::new(conn)) })
     }
 
@@ -480,6 +492,50 @@ impl Storage {
         Ok(())
     }
 
+    /// Full-text search across the user's messages. Returns hits sorted
+    /// newest-first with a short snippet around the matched terms. The
+    /// query is pre-tokenised here so the caller can pass plain user
+    /// input; each whitespace-separated word becomes a prefix-matched
+    /// FTS5 phrase ANDed against the rest.
+    pub fn search(
+        &self,
+        user_sub: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<SearchHit>, StorageError> {
+        let fts = build_fts_query(query);
+        if fts.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.inner.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.conv_id, c.title, m.role, m.created_at,
+                    snippet(messages_fts, 0, '[', ']', '…', 12)
+             FROM messages_fts
+             JOIN messages m ON m.id = messages_fts.rowid
+             JOIN conversations c ON c.id = m.conv_id
+             WHERE c.user_sub = ?1
+               AND messages_fts MATCH ?2
+               AND m.status = 'done'
+             ORDER BY m.created_at DESC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![user_sub, fts, limit as i64],
+            |row| {
+                Ok(SearchHit {
+                    message_id: row.get(0)?,
+                    conv_id: row.get(1)?,
+                    conv_title: row.get(2)?,
+                    role: row.get(3)?,
+                    created_at: row.get(4)?,
+                    snippet: row.get(5)?,
+                })
+            },
+        )?;
+        rows.collect::<Result<_, _>>().map_err(Into::into)
+    }
+
     /// Remove a user and everything that depends on them. FK cascades
     /// from `users(sub)` → `conversations.user_sub` →
     /// `messages.conv_id` → `message_images.message_id` so the single
@@ -529,6 +585,72 @@ fn insert_message_images(
         stmt.execute(params![message_id, idx as i64, mime, bytes])?;
     }
     Ok(())
+}
+
+/// Create the FTS5 mirror of `messages.content` and keep it in sync
+/// via INSERT / UPDATE / DELETE triggers. Backfills on first run so
+/// existing conversations are immediately searchable. FTS5 is bundled
+/// with the rusqlite feature set; absence here would be a build-time
+/// regression rather than a runtime fallback we need to plan for.
+fn bootstrap_search_index(conn: &Connection) -> Result<(), StorageError> {
+    conn.execute_batch(
+        r#"
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            content,
+            content='messages',
+            content_rowid='id',
+            tokenize='unicode61 remove_diacritics 2'
+        );
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ai
+        AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_ad
+        AFTER DELETE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS messages_fts_au
+        AFTER UPDATE ON messages BEGIN
+            INSERT INTO messages_fts(messages_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
+            INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+        END;
+        "#,
+    )?;
+    let fts_rows: i64 =
+        conn.query_row("SELECT COUNT(*) FROM messages_fts", [], |r| r.get(0))?;
+    if fts_rows == 0 {
+        let inserted = conn.execute(
+            "INSERT INTO messages_fts(rowid, content)
+             SELECT id, content FROM messages WHERE content != ''",
+            [],
+        )?;
+        if inserted > 0 {
+            tracing::info!("search index: backfilled {inserted} messages");
+        }
+    }
+    Ok(())
+}
+
+/// Turn raw user input into a defensible FTS5 query. Each whitespace
+/// token becomes a prefix-matched phrase; phrases are ANDed together.
+/// Inner double quotes are escaped so a stray `"` in the input can't
+/// blow up the parser. Returns empty when the input has no usable
+/// tokens.
+fn build_fts_query(raw: &str) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for token in raw.split_whitespace() {
+        let cleaned: String = token
+            .chars()
+            .filter(|c| !matches!(c, '"' | '(' | ')' | '*'))
+            .collect();
+        if cleaned.is_empty() {
+            continue;
+        }
+        parts.push(format!("\"{cleaned}\"*"));
+    }
+    parts.join(" ")
 }
 
 /// One-shot migration that moves any base64 image attachments from the
@@ -777,6 +899,68 @@ mod tests {
         s.create_conversation("b", "still here", None).unwrap();
         let bob_convs = s.list_conversations("b").unwrap();
         assert_eq!(bob_convs.len(), 1);
+    }
+
+    #[test]
+    fn search_returns_only_owners_hits() {
+        let s = fresh();
+        seed_users(&s);
+        let a_conv = s.create_conversation("a", "alice room", None).unwrap();
+        let b_conv = s.create_conversation("b", "bob room", None).unwrap();
+        s.append_message("a", &a_conv.id, "user", "make a kanidm guide", &[])
+            .unwrap();
+        s.append_message("b", &b_conv.id, "user", "kanidm setup notes", &[])
+            .unwrap();
+        let hits = s.search("a", "kanidm", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].conv_id, a_conv.id);
+        assert!(hits[0].snippet.contains("kanidm"));
+    }
+
+    #[test]
+    fn search_prefix_matches_partial_words() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        s.append_message("a", &c.id, "user", "implementing actix-web handlers", &[])
+            .unwrap();
+        let hits = s.search("a", "implement", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn search_skips_pending_assistant_rows() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let pending = s
+            .append_pending_assistant("a", &c.id)
+            .unwrap();
+        // Empty pending row content has nothing to match anyway, but
+        // verify the status filter holds even when content is set.
+        s.fail_message(pending, "kanidm").unwrap();
+        let hits = s.search("a", "kanidm", 10).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_empty_query_returns_no_hits() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        s.append_message("a", &c.id, "user", "hello world", &[]).unwrap();
+        assert!(s.search("a", "", 10).unwrap().is_empty());
+        assert!(s.search("a", "   ", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_handles_quotes_in_input() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        s.append_message("a", &c.id, "user", "quoted reply", &[]).unwrap();
+        let hits = s.search("a", "\"quoted\"", 10).unwrap();
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]

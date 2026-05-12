@@ -142,6 +142,7 @@ pub fn create_app(
                 .route("/models/caps", web::get().to(handlers::model_caps))
                 .route("/personas", web::get().to(handlers::list_personas))
                 .route("/voices", web::get().to(handlers::list_voices))
+                .route("/search", web::get().to(handlers::search))
                 .service(
                     web::scope("/conversations")
                         .route("", web::get().to(handlers::list_conversations))
