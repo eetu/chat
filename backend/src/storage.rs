@@ -627,23 +627,28 @@ fn bootstrap_search_index(conn: &Connection) -> Result<(), StorageError> {
     )?;
     // FTS5 external-content tables expose a `rebuild` command that
     // (re)populates the index from the underlying `messages` table.
-    // Run it whenever the index is shorter than the live message
-    // count — covers the first-time migration on an existing DB and
-    // catches any drift from a missed trigger.
-    let fts_rows: i64 =
-        conn.query_row("SELECT COUNT(*) FROM messages_fts", [], |r| r.get(0))?;
+    // Compare the **index** row count (the hidden `_docsize` shadow
+    // table) against the live message count — `SELECT COUNT(*) FROM
+    // messages_fts` proxies through to the content table and would
+    // always report the source count, which silently masks an empty
+    // index on the first run.
+    let fts_docs: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages_fts_docsize",
+        [],
+        |r| r.get(0),
+    )?;
     let msg_rows: i64 = conn.query_row(
         "SELECT COUNT(*) FROM messages WHERE content != ''",
         [],
         |r| r.get(0),
     )?;
-    if fts_rows < msg_rows {
+    if fts_docs < msg_rows {
         conn.execute(
             "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
             [],
         )?;
         tracing::info!(
-            "search index: rebuilt ({fts_rows} → {msg_rows} messages)"
+            "search index: rebuilt ({fts_docs} → {msg_rows} messages)"
         );
     }
     Ok(())
