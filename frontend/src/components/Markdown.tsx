@@ -6,6 +6,7 @@ import {
   isValidElement,
   memo,
   ReactNode,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -49,11 +50,160 @@ const extractLanguage = (children: ReactNode): string | null => {
   return match[1];
 };
 
+/// Recursively pull the plain-text source out of a `<pre>`'s children
+/// tree. react-markdown nests text inside a `<code>` element whose
+/// children are usually a single string but can be split when remark
+/// breaks lines.
+const extractText = (children: ReactNode): string => {
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(extractText).join("");
+  if (isValidElement(children)) {
+    return extractText(
+      (children.props as { children?: ReactNode }).children ?? null,
+    );
+  }
+  return "";
+};
+
+/// Lazy-imported mermaid renderer. Diagrams render only when a
+/// ```mermaid fence shows up — the package is ~1 MB and shouldn't
+/// land in every chat session. On parse error we fall back to the
+/// source as a plain code block so a malformed / mid-stream diagram
+/// still shows something readable.
+let mermaidPromise: Promise<(typeof import("mermaid"))["default"]> | null =
+  null;
+let mermaidLastTheme: "default" | "dark" | null = null;
+const loadMermaid = async (themeMode: "default" | "dark") => {
+  if (!mermaidPromise) {
+    mermaidPromise = import("mermaid").then((m) => m.default);
+  }
+  const mermaid = await mermaidPromise;
+  if (mermaidLastTheme !== themeMode) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: themeMode,
+      securityLevel: "strict",
+    });
+    mermaidLastTheme = themeMode;
+  }
+  return mermaid;
+};
+
+const MermaidDiagram = ({
+  source,
+  dark,
+}: {
+  source: string;
+  dark: boolean;
+}) => {
+  const theme = useTheme();
+  const [svg, setSvg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Lazy state init — Math.random must not run during render.
+  const [diagramId] = useState(
+    () => `mmd-${Math.random().toString(36).slice(2, 10)}`,
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!source.trim()) {
+      // Intentional reset so a mid-stream empty fence clears any
+      // previously-rendered diagram.
+      // eslint-disable-next-line @eslint-react/set-state-in-effect
+      setSvg(null);
+      // eslint-disable-next-line @eslint-react/set-state-in-effect
+      setError(null);
+      return;
+    }
+    (async () => {
+      try {
+        const mermaid = await loadMermaid(dark ? "dark" : "default");
+        const { svg: rendered } = await mermaid.render(diagramId, source);
+        if (cancelled) return;
+        setSvg(rendered);
+        setError(null);
+      } catch (e) {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+        setSvg(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [source, dark, diagramId]);
+
+  if (svg) {
+    return (
+      <div
+        css={{
+          margin: "0.5em 0",
+          padding: "10px 12px",
+          background: theme.colors.background.light,
+          border: `1px solid ${theme.colors.border}`,
+          borderRadius: theme.border.radius,
+          overflowX: "auto",
+          "& svg": { maxWidth: "100%", height: "auto" },
+        }}
+        // Mermaid emits SVG from text we render ourselves with
+        // `securityLevel: "strict"`, which sandboxes scripts and event
+        // handlers. Acceptable use of dangerouslySetInnerHTML.
+        // eslint-disable-next-line @eslint-react/dom-no-dangerously-set-innerhtml
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+    );
+  }
+  return (
+    <div css={{ position: "relative" }}>
+      <pre
+        css={{
+          background: theme.colors.background.light,
+          border: `1px solid ${theme.colors.border}`,
+          borderRadius: theme.border.radius,
+          padding: "10px 12px",
+          overflowX: "auto",
+          fontSize: "0.88em",
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+        }}
+      >
+        {source}
+      </pre>
+      <span
+        aria-hidden
+        css={{
+          position: "absolute",
+          top: 6,
+          left: 10,
+          padding: "1px 6px",
+          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+          fontSize: 10,
+          color: error ? theme.colors.error : theme.colors.text.muted,
+          background: theme.colors.background.main,
+          border: `1px solid ${error ? theme.colors.error : theme.colors.border}`,
+          borderRadius: 4,
+        }}
+      >
+        {error ? "mermaid error" : "mermaid"}
+      </span>
+    </div>
+  );
+};
+
 const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
   const theme = useTheme();
   const preRef = useRef<HTMLPreElement>(null);
   const [copied, setCopied] = useState(false);
   const language = extractLanguage(children);
+
+  if (language === "mermaid") {
+    return (
+      <MermaidDiagram
+        source={extractText(children)}
+        dark={theme.mode === "dark"}
+      />
+    );
+  }
 
   const handleCopy = async () => {
     const text = preRef.current?.textContent ?? "";
