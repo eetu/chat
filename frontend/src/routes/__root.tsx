@@ -1,11 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useTheme } from "@emotion/react";
 import { createRootRoute, Outlet, useLocation } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMediaQuery } from "usehooks-ts";
 
 import HealthBanner from "../components/HealthBanner";
 import LoginGate from "../components/LoginGate";
+import SearchPalette from "../components/SearchPalette";
 import Sidebar from "../components/Sidebar";
 
 const RootLayout = () => {
@@ -14,9 +15,24 @@ const RootLayout = () => {
 
   // single visibility flag. desktop default = open inline; mobile default = closed.
   const [open, setOpen] = useState(!isMobile);
+  const [searchOpen, setSearchOpen] = useState(false);
   const location = useLocation();
   const [lastMobile, setLastMobile] = useState(isMobile);
   const [lastPath, setLastPath] = useState(location.pathname);
+
+  useEffect(() => {
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      // ⌘K (mac) / ctrl+K (everywhere else) toggles the search palette
+      // from any route. Ignore the binding while a contenteditable or
+      // input has focus on iOS so typing the literal "k" keeps working.
+      if (e.key.toLowerCase() === "k" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setSearchOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // crossing the breakpoint resets to layout default; route change closes
   // the drawer on mobile. Done during render so React can batch with the
@@ -57,7 +73,10 @@ const RootLayout = () => {
             display: !isMobile && !open ? "none" : "flex",
           }}
         >
-          <Sidebar onClose={() => setOpen(false)} />
+          <Sidebar
+            onClose={() => setOpen(false)}
+            onOpenSearch={() => setSearchOpen(true)}
+          />
         </div>
 
         {isMobile && open && (
@@ -116,6 +135,7 @@ const RootLayout = () => {
           <HealthBanner />
           <Outlet />
         </main>
+        {searchOpen && <SearchPalette onClose={() => setSearchOpen(false)} />}
       </div>
     </LoginGate>
   );

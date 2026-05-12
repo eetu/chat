@@ -3,8 +3,6 @@ import { PointerEvent, ReactNode, useRef, useState } from "react";
 
 const REVEAL_PX = 88;
 const TRIGGER_PX = 200;
-const LONG_PRESS_MS = 550;
-const LONG_PRESS_MOVE_PX = 8;
 
 /**
  * Touch-only swipe-to-delete with a hover-revealed × button for mouse /
@@ -13,84 +11,33 @@ const LONG_PRESS_MOVE_PX = 8;
  *
  * - Touch: drag left up to TRIGGER_PX. Past threshold = commit. Between
  *   REVEAL_PX and TRIGGER_PX = stay open. Otherwise snap closed.
- *   Holding still for ~550ms fires `onLongPress` with the touch
- *   coordinates so a wrapping row can anchor an actions menu there.
  * - Mouse / pen: small × button appears on row hover; click → confirm dialog.
  */
 const SwipeRow = ({
   children,
   onDelete,
   confirmLabel = "delete this conversation?",
-  hideMouseDelete = false,
-  onLongPress,
 }: {
   children: ReactNode;
   onDelete: () => void;
   confirmLabel?: string;
-  /** When true, suppress the hover-revealed × button so a wrapping
-   * component can render its own action menu (kebab, etc.) without two
-   * affordances overlapping. Touch swipe-to-delete is unaffected. */
-  hideMouseDelete?: boolean;
-  /** Touch only: invoked after the user holds the row still for
-   * ~550 ms. Coordinates are the original pointerdown screen position
-   * so the wrapper can anchor a menu near the finger. */
-  onLongPress?: (x: number, y: number) => void;
 }) => {
   const theme = useTheme();
   const [offset, setOffset] = useState(0);
   const [dragging, setDragging] = useState(false);
   const startXRef = useRef<number | null>(null);
   const startOffsetRef = useRef(0);
-  const longPressTimerRef = useRef<number | null>(null);
-  const longPressFiredRef = useRef(false);
-  const startScreenRef = useRef<{ x: number; y: number } | null>(null);
-
-  const cancelLongPress = () => {
-    if (longPressTimerRef.current != null) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-  };
 
   const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
     if (e.pointerType !== "touch") return;
     startXRef.current = e.clientX;
     startOffsetRef.current = offset;
-    startScreenRef.current = { x: e.clientX, y: e.clientY };
-    longPressFiredRef.current = false;
     setDragging(true);
-    const el = e.currentTarget as HTMLDivElement;
-    const pointerId = e.pointerId;
-    el.setPointerCapture(pointerId);
-    if (onLongPress) {
-      longPressTimerRef.current = window.setTimeout(() => {
-        longPressFiredRef.current = true;
-        longPressTimerRef.current = null;
-        // Hand the gesture over to the wrapper's menu — drop any
-        // partial swipe and release pointer capture so the menu's
-        // outside-click listener gets a clean event stream.
-        setOffset(0);
-        setDragging(false);
-        startXRef.current = null;
-        try {
-          el.releasePointerCapture(pointerId);
-        } catch {
-          // ignore
-        }
-        const start = startScreenRef.current;
-        if (start) onLongPress(start.x, start.y);
-      }, LONG_PRESS_MS);
-    }
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
   };
 
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     if (e.pointerType !== "touch" || startXRef.current == null) return;
-    const start = startScreenRef.current;
-    if (start) {
-      const dx = e.clientX - start.x;
-      const dy = e.clientY - start.y;
-      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_PX) cancelLongPress();
-    }
     const delta = e.clientX - startXRef.current;
     const next = Math.min(
       0,
@@ -100,21 +47,8 @@ const SwipeRow = ({
   };
 
   const finish = (e: PointerEvent<HTMLDivElement>) => {
-    cancelLongPress();
-    startScreenRef.current = null;
     startXRef.current = null;
     setDragging(false);
-    // Long-press already took over; nothing else to do here. Reset the
-    // flag so the next gesture starts fresh.
-    if (longPressFiredRef.current) {
-      longPressFiredRef.current = false;
-      try {
-        e.currentTarget.releasePointerCapture(e.pointerId);
-      } catch {
-        // ignore
-      }
-      return;
-    }
     // Release explicitly: iOS Safari can stall subsequent touch / scroll on
     // unrelated elements if a captured pointer's element is unmounted (which
     // happens when the swipe past TRIGGER_PX deletes this row) before the
@@ -201,44 +135,42 @@ const SwipeRow = ({
         }}
       >
         {children}
-        {!hideMouseDelete && (
-          /* hover-revealed × button (mouse / pen) */
-          <button
-            type="button"
-            aria-label="delete"
-            className="swipe-row__x"
-            onClick={onMouseDelete}
-            css={{
-              position: "absolute",
-              top: "50%",
-              right: 8,
-              transform: "translateY(-50%)",
-              width: 24,
-              height: 24,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "none",
-              borderRadius: 4,
-              background: "transparent",
-              color: theme.colors.text.muted,
-              cursor: "pointer",
-              opacity: 0,
-              pointerEvents: "none",
-              transition: "opacity 120ms ease, background 120ms ease",
-              "@media (hover: hover)": {
-                "&:hover": {
-                  background: theme.colors.text.light,
-                  color: theme.colors.error,
-                },
+        {/* hover-revealed × button (mouse / pen) */}
+        <button
+          type="button"
+          aria-label="delete"
+          className="swipe-row__x"
+          onClick={onMouseDelete}
+          css={{
+            position: "absolute",
+            top: "50%",
+            right: 8,
+            transform: "translateY(-50%)",
+            width: 24,
+            height: 24,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            border: "none",
+            borderRadius: 4,
+            background: "transparent",
+            color: theme.colors.text.muted,
+            cursor: "pointer",
+            opacity: 0,
+            pointerEvents: "none",
+            transition: "opacity 120ms ease, background 120ms ease",
+            "@media (hover: hover)": {
+              "&:hover": {
+                background: theme.colors.text.light,
+                color: theme.colors.error,
               },
-            }}
-          >
-            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
-              close
-            </span>
-          </button>
-        )}
+            },
+          }}
+        >
+          <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+            close
+          </span>
+        </button>
       </div>
     </div>
   );

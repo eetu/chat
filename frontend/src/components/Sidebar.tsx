@@ -6,7 +6,6 @@ import {
   useParams,
 } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import useSWR, { useSWRConfig } from "swr";
 
 import { api, Conversation, Me } from "../api";
@@ -17,9 +16,13 @@ import Wordmark from "./Wordmark";
 type Props = {
   /** Closes the sidebar (collapses on desktop, slides drawer out on mobile). */
   onClose?: () => void;
+  /** Opens the global search palette. Threaded down from `__root` so
+   * the keyboard shortcut and the sidebar button share one source of
+   * truth for the open state. */
+  onOpenSearch?: () => void;
 };
 
-const Sidebar = ({ onClose }: Props) => {
+const Sidebar = ({ onClose, onOpenSearch }: Props) => {
   const theme = useTheme();
   const navigate = useNavigate();
   const params = useParams({ strict: false }) as { id?: string };
@@ -124,6 +127,53 @@ const Sidebar = ({ onClose }: Props) => {
         new chat
       </button>
 
+      {onOpenSearch && (
+        <button
+          type="button"
+          onClick={onOpenSearch}
+          aria-label="search conversations"
+          css={{
+            margin: "0 12px 8px",
+            padding: "8px 12px",
+            borderRadius: theme.border.radius,
+            border: `1px solid ${theme.colors.border}`,
+            background: "transparent",
+            color: theme.colors.text.muted,
+            fontFamily: theme.fonts.heading,
+            fontSize: 13,
+            textAlign: "left",
+            cursor: "pointer",
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            "&:hover": {
+              color: theme.colors.text.main,
+              background: theme.colors.background.main,
+            },
+          }}
+        >
+          <span className="material-icons-outlined" css={{ fontSize: 16 }}>
+            search
+          </span>
+          <span css={{ flex: 1 }}>search…</span>
+          <kbd
+            aria-hidden
+            css={{
+              ...theme.typography.caption,
+              fontFamily:
+                "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+              fontSize: 11,
+              color: theme.colors.text.muted,
+              border: `1px solid ${theme.colors.border}`,
+              borderRadius: 3,
+              padding: "0 5px",
+            }}
+          >
+            ⌘K
+          </kbd>
+        </button>
+      )}
+
       <div css={{ flex: 1, overflowY: "auto", padding: "4px 0 16px" }}>
         {data?.length === 0 && (
           <div
@@ -215,13 +265,7 @@ const ConversationRow = ({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(convo.title);
   const [saving, setSaving] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState<{ top: number; right: number } | null>(
-    null,
-  );
   const inputRef = useRef<HTMLInputElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const triggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!editing) return;
@@ -231,67 +275,9 @@ const ConversationRow = ({
     el.select();
   }, [editing]);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointer = (e: PointerEvent) => {
-      const el = menuRef.current;
-      const trigger = triggerRef.current;
-      if (!(e.target instanceof Node)) return;
-      // Clicks on the trigger itself are handled by its own onClick; the
-      // outside-pointer guard only closes for things outside both the
-      // menu and the trigger button.
-      if (el?.contains(e.target) || trigger?.contains(e.target)) return;
-      setMenuOpen(false);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key === "Escape") setMenuOpen(false);
-    };
-    const onScroll = () => setMenuOpen(false);
-    window.addEventListener("pointerdown", onPointer);
-    window.addEventListener("keydown", onKey);
-    // Capture-phase scroll so it fires for any scroll container parent
-    // of the sidebar (the conversation list itself, mainly). Position is
-    // anchored to viewport coords; scrolling invalidates it.
-    window.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", onScroll);
-    return () => {
-      window.removeEventListener("pointerdown", onPointer);
-      window.removeEventListener("keydown", onKey);
-      window.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", onScroll);
-    };
-  }, [menuOpen]);
-
-  const openMenu = () => {
-    const rect = triggerRef.current?.getBoundingClientRect();
-    if (rect) {
-      setMenuPos({
-        top: rect.bottom + 4,
-        right: Math.max(8, window.innerWidth - rect.right),
-      });
-    }
-    setMenuOpen(true);
-  };
-
-  const openMenuAtPoint = (x: number, y: number) => {
-    // Anchor near the finger but inset from the viewport edges so the
-    // menu never overflows on narrow phones.
-    setMenuPos({
-      top: Math.min(y + 8, window.innerHeight - 120),
-      right: Math.max(8, window.innerWidth - x - 8),
-    });
-    setMenuOpen(true);
-  };
-
   const startEdit = () => {
-    setMenuOpen(false);
     setDraft(convo.title);
     setEditing(true);
-  };
-
-  const requestDelete = () => {
-    setMenuOpen(false);
-    if (window.confirm("delete this conversation?")) onDelete();
   };
 
   const cancel = () => {
@@ -319,22 +305,8 @@ const ConversationRow = ({
   };
 
   return (
-    <SwipeRow onDelete={onDelete} hideMouseDelete onLongPress={openMenuAtPoint}>
-      <div
-        css={{
-          position: "relative",
-          "& .row-menu-trigger": {
-            opacity: 0,
-            transition: "opacity 120ms ease",
-          },
-          "&:hover .row-menu-trigger, &:focus-within .row-menu-trigger": {
-            opacity: 1,
-          },
-          "@media (hover: none)": {
-            "& .row-menu-trigger": { opacity: 1 },
-          },
-        }}
-      >
+    <SwipeRow onDelete={onDelete}>
+      <div css={{ position: "relative" }}>
         {editing ? (
           <div
             css={{
@@ -384,10 +356,18 @@ const ConversationRow = ({
           <Link
             to="/c/$id"
             params={{ id: convo.id }}
+            onDoubleClick={(e) => {
+              // Desktop convenience: dbl-click the title row to rename
+              // inline. Mobile loses this affordance but swipe still
+              // handles delete; rename via a longer hold collides with
+              // iOS Safari's link-preview popup, so we don't bind it.
+              e.preventDefault();
+              e.stopPropagation();
+              startEdit();
+            }}
             css={{
               display: "block",
               padding: "10px 16px",
-              paddingRight: 40,
               borderLeft: `2px solid ${
                 active ? theme.colors.activity.on : "transparent"
               }`,
@@ -416,141 +396,10 @@ const ConversationRow = ({
             </div>
           </Link>
         )}
-        {!editing && (
-          <button
-            ref={triggerRef}
-            type="button"
-            className="row-menu-trigger"
-            aria-label="conversation actions"
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            title="actions"
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              if (menuOpen) setMenuOpen(false);
-              else openMenu();
-            }}
-            css={{
-              position: "absolute",
-              top: 8,
-              right: 8,
-              width: 26,
-              height: 26,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "none",
-              borderRadius: 4,
-              background: menuOpen
-                ? theme.colors.background.main
-                : "transparent",
-              color: menuOpen
-                ? theme.colors.text.main
-                : theme.colors.text.muted,
-              cursor: "pointer",
-              "&:hover": {
-                background: theme.colors.background.main,
-                color: theme.colors.text.main,
-              },
-            }}
-          >
-            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
-              more_vert
-            </span>
-          </button>
-        )}
-        {/* Portal the menu to body so SwipeRow's overflow:hidden doesn't
-            clip it against the next row. Position is captured from the
-            trigger's bounding rect at open-time; window scroll / resize
-            close the menu instead of chasing the trigger live. */}
-        {menuOpen &&
-          menuPos &&
-          createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              css={{
-                position: "fixed",
-                top: menuPos.top,
-                right: menuPos.right,
-                zIndex: 50,
-                minWidth: 160,
-                background: theme.colors.background.main,
-                border: `1px solid ${theme.colors.border}`,
-                borderRadius: theme.border.radius,
-                boxShadow: theme.shadows.main,
-                padding: 4,
-                display: "flex",
-                flexDirection: "column",
-              }}
-            >
-              <MenuItem
-                theme={theme}
-                icon="edit"
-                label="rename"
-                onSelect={startEdit}
-              />
-              <MenuItem
-                theme={theme}
-                icon="delete_outline"
-                label="delete"
-                danger
-                onSelect={requestDelete}
-              />
-            </div>,
-            document.body,
-          )}
       </div>
     </SwipeRow>
   );
 };
-
-const MenuItem = ({
-  theme,
-  icon,
-  label,
-  danger,
-  onSelect,
-}: {
-  theme: Theme;
-  icon: string;
-  label: string;
-  danger?: boolean;
-  onSelect: () => void;
-}) => (
-  <button
-    type="button"
-    role="menuitem"
-    onClick={(e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      onSelect();
-    }}
-    css={{
-      ...theme.typography.body2,
-      display: "flex",
-      alignItems: "center",
-      gap: 8,
-      padding: "8px 10px",
-      border: "none",
-      background: "transparent",
-      color: danger ? theme.colors.error : theme.colors.text.main,
-      textAlign: "left",
-      cursor: "pointer",
-      borderRadius: 4,
-      "&:hover": {
-        background: danger ? theme.colors.error : theme.colors.background.light,
-        color: danger ? "#fff" : theme.colors.text.main,
-      },
-    }}
-  >
-    <span className="material-icons-outlined" css={{ fontSize: 18 }}>
-      {icon}
-    </span>
-    {label}
-  </button>
-);
 
 function relativeTime(unix: number): string {
   const diff = Date.now() / 1000 - unix;

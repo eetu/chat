@@ -47,6 +47,16 @@ export type Persona = {
   description: string;
 };
 
+export type SearchHit = {
+  message_id: number;
+  conv_id: string;
+  conv_title: string;
+  role: "user" | "assistant" | "system";
+  created_at: number;
+  /** FTS5 snippet with `[…]` markers around matched terms. */
+  snippet: string;
+};
+
 const json = async <T>(res: Response): Promise<T> => {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
@@ -119,6 +129,10 @@ export const api = {
     fetch("/api/voices", { credentials: "include" }).then(
       json<{ voices?: Array<string | { name?: string; voice?: string }> }>,
     ),
+  search: (q: string) =>
+    fetch(`/api/search?q=${encodeURIComponent(q)}`, {
+      credentials: "include",
+    }).then(json<{ hits: SearchHit[] }>),
 };
 
 export type ChatStreamEvent =
