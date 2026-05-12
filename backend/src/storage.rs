@@ -319,10 +319,21 @@ impl Storage {
         images: &[String],
     ) -> Result<(), StorageError> {
         let conn = self.inner.lock().unwrap();
-        conn.execute(
+        let updated = conn.execute(
             "UPDATE messages SET content = ?1, status = 'done' WHERE id = ?2",
             params![content, message_id],
         )?;
+        if updated == 0 {
+            // The pending row was deleted while the job was in flight —
+            // typically because the user cancelled or navigated away.
+            // Skip the image insert; the FK on `message_images` would
+            // otherwise blow up.
+            tracing::info!(
+                "complete_message: row {message_id} gone before persistence; \
+                 dropping generated payload"
+            );
+            return Ok(());
+        }
         // Defensive: a re-completed message shouldn't keep stale images.
         conn.execute(
             "DELETE FROM message_images WHERE message_id = ?1",
