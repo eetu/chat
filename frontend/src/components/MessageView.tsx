@@ -3,7 +3,12 @@ import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
 import { api, imageUrl, Message } from "../api";
-import { normalizeVoices, pickVoice, readVoiceOverride } from "../tts";
+import {
+  markdownToSpeech,
+  normalizeVoices,
+  pickVoice,
+  readVoiceOverride,
+} from "../tts";
 import Markdown from "./Markdown";
 import TypingIndicator from "./TypingIndicator";
 
@@ -686,11 +691,18 @@ const MessageActions = ({
         voices,
         readVoiceOverride(),
       );
+      // Strip markdown so piper doesn't announce "asterisk asterisk"
+      // around every emphasized word or read code-fence backticks.
+      const spoken = markdownToSpeech(msg.content);
+      if (!spoken) {
+        setTtsState("idle");
+        return;
+      }
       const res = await fetch("/api/tts", {
         method: "POST",
         credentials: "include",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ text: msg.content, voice }),
+        body: JSON.stringify({ text: spoken, voice }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
       const blob = await res.blob();
@@ -753,9 +765,16 @@ const MessageActions = ({
     a.remove();
   };
 
+  // Force the action row visible while TTS is in flight. The wrapping
+  // bubble fades these on pointer-leave; without the override, mid-
+  // playback the stop button would vanish along with everything else
+  // and leave the user no way to halt the audio without clicking back
+  // onto the bubble.
+  const ttsActive = ttsState !== "idle";
   return (
     <div
       className="message-actions"
+      style={ttsActive ? { opacity: 1 } : undefined}
       css={{
         display: "flex",
         alignItems: "center",

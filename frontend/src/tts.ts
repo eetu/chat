@@ -123,6 +123,32 @@ export const pickVoice = (
   return voices.find((v) => v.family === lang)?.slug ?? voices[0]?.slug;
 };
 
+/// Best-effort markdown → plain text for TTS. Strips fences, inline
+/// code, links, headers, list markers, emphasis. Not a full parser —
+/// the goal is to keep piper from announcing "asterisk asterisk"
+/// around every emphasized word, not to round-trip prose perfectly.
+export const markdownToSpeech = (md: string): string =>
+  md
+    .replace(/```[\s\S]*?```/g, " ") // fenced code blocks
+    .replace(/`([^`]+)`/g, "$1") // inline code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ") // images
+    .replace(/\[([^\]]+)\]\(([^)]*)\)/g, "$1") // links → label
+    .replace(/<https?:\/\/[^>]+>/g, " ") // autolinks
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "") // headers
+    .replace(/^\s{0,3}>\s?/gm, "") // blockquotes
+    .replace(/^\s*[-*+]\s+/gm, "") // bullet markers
+    .replace(/^\s*\d+\.\s+/gm, "") // numbered markers
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **bold**
+    .replace(/__([^_]+)__/g, "$1") // __bold__
+    .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, "$1$2") // *italic*
+    .replace(/(^|[^_])_([^_\s][^_]*)_/g, "$1$2") // _italic_
+    .replace(/~~([^~]+)~~/g, "$1") // ~~strike~~
+    .replace(/\\([\\`*_{}[\]()#+\-.!>~])/g, "$1") // escaped chars
+    .replace(/\r?\n{2,}/g, ". ") // paragraph breaks → sentence pause
+    .replace(/\r?\n/g, " ") // line breaks
+    .replace(/[ \t]+/g, " ")
+    .trim();
+
 export const readVoiceOverride = (): string | null => {
   try {
     return window.localStorage.getItem(TTS_VOICE_KEY);
