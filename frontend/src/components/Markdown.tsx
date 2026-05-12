@@ -181,7 +181,7 @@ const Markdown = ({ children }: { children: string }) => {
 
   return (
     <>
-      <Global styles={highlightThemes} />
+      <Global styles={theme.mode === "dark" ? darkHighlight : lightHighlight} />
       <div
         css={{
           ...theme.typography.body1,
@@ -282,11 +282,11 @@ const Markdown = ({ children }: { children: string }) => {
 };
 
 /**
- * highlight.js github / github-dark, scoped to .hljs and toggled via
- * prefers-color-scheme. Keeping inline so we don't ship a separate CSS
- * import path.
+ * highlight.js github / github-dark, scoped to .hljs. Split into two
+ * blocks driven by `theme.mode` so the user's settings override beats
+ * the system prefers-color-scheme query.
  */
-const highlightThemes = `
+const lightHighlight = `
 .hljs { color: #24292f; background: transparent; }
 .hljs-doctag,.hljs-keyword,.hljs-meta .hljs-keyword,.hljs-template-tag,.hljs-template-variable,.hljs-type,.hljs-variable.language_ { color: #cf222e; }
 .hljs-title,.hljs-title.class_,.hljs-title.class_.inherited__,.hljs-title.function_ { color: #8250df; }
@@ -302,22 +302,24 @@ const highlightThemes = `
 .hljs-strong { font-weight: 600; }
 .hljs-addition { color: #116329; background: #dafbe1; }
 .hljs-deletion { color: #82071e; background: #ffebe9; }
+`;
 
-@media (prefers-color-scheme: dark) {
-  .hljs { color: #c9d1d9; }
-  .hljs-doctag,.hljs-keyword,.hljs-meta .hljs-keyword,.hljs-template-tag,.hljs-template-variable,.hljs-type,.hljs-variable.language_ { color: #ff7b72; }
-  .hljs-title,.hljs-title.class_,.hljs-title.class_.inherited__,.hljs-title.function_ { color: #d2a8ff; }
-  .hljs-attr,.hljs-attribute,.hljs-literal,.hljs-meta,.hljs-number,.hljs-operator,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-id,.hljs-variable { color: #79c0ff; }
-  .hljs-meta .hljs-string,.hljs-regexp,.hljs-string { color: #a5d6ff; }
-  .hljs-built_in,.hljs-symbol { color: #ffa657; }
-  .hljs-code,.hljs-comment,.hljs-formula { color: #8b949e; }
-  .hljs-name,.hljs-quote,.hljs-selector-pseudo,.hljs-selector-tag { color: #7ee787; }
-  .hljs-subst { color: #c9d1d9; }
-  .hljs-section { color: #1f6feb; }
-  .hljs-bullet { color: #f2cc60; }
-  .hljs-addition { color: #aff5b4; background: #033a16; }
-  .hljs-deletion { color: #ffdcd7; background: #67060c; }
-}
+const darkHighlight = `
+.hljs { color: #c9d1d9; background: transparent; }
+.hljs-doctag,.hljs-keyword,.hljs-meta .hljs-keyword,.hljs-template-tag,.hljs-template-variable,.hljs-type,.hljs-variable.language_ { color: #ff7b72; }
+.hljs-title,.hljs-title.class_,.hljs-title.class_.inherited__,.hljs-title.function_ { color: #d2a8ff; }
+.hljs-attr,.hljs-attribute,.hljs-literal,.hljs-meta,.hljs-number,.hljs-operator,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-id,.hljs-variable { color: #79c0ff; }
+.hljs-meta .hljs-string,.hljs-regexp,.hljs-string { color: #a5d6ff; }
+.hljs-built_in,.hljs-symbol { color: #ffa657; }
+.hljs-code,.hljs-comment,.hljs-formula { color: #8b949e; font-style: italic; }
+.hljs-name,.hljs-quote,.hljs-selector-pseudo,.hljs-selector-tag { color: #7ee787; }
+.hljs-subst { color: #c9d1d9; }
+.hljs-section { color: #1f6feb; font-weight: 600; }
+.hljs-bullet { color: #f2cc60; }
+.hljs-emphasis { font-style: italic; }
+.hljs-strong { font-weight: 600; }
+.hljs-addition { color: #aff5b4; background: #033a16; }
+.hljs-deletion { color: #ffdcd7; background: #67060c; }
 `;
 
 export default memo(Markdown);

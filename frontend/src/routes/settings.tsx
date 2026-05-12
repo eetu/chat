@@ -6,6 +6,7 @@ import useSWR from "swr";
 
 import { api, Me, Status } from "../api";
 import { mq } from "../mq";
+import { ThemeOverride, useThemeOverride } from "../theme";
 import { normalizeVoices, readVoiceOverride, writeVoiceOverride } from "../tts";
 
 const SettingsView = () => {
@@ -77,9 +78,61 @@ const SettingsView = () => {
         </div>
 
         {me && <AccountSection me={me} theme={theme} />}
+        <AppearanceSection theme={theme} />
         {ttsAvailable && <VoiceSection theme={theme} />}
       </div>
     </div>
+  );
+};
+
+const AppearanceSection = ({ theme }: { theme: Theme }) => {
+  const { override, setOverride } = useThemeOverride();
+  return (
+    <section css={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <h2
+        css={{
+          ...theme.typography.h3,
+          color: theme.colors.text.main,
+          margin: 0,
+        }}
+      >
+        appearance
+      </h2>
+      <Row
+        label="theme"
+        detail={
+          <span
+            css={{
+              ...theme.typography.body2,
+              color: theme.colors.text.muted,
+            }}
+          >
+            system follows the os preference; light / dark force the look
+            regardless of prefers-color-scheme.
+          </span>
+        }
+        theme={theme}
+      >
+        <select
+          value={override}
+          onChange={(e) => setOverride(e.target.value as ThemeOverride)}
+          css={{
+            ...theme.typography.body2,
+            padding: "5px 8px",
+            borderRadius: 4,
+            border: `1px solid ${theme.colors.border}`,
+            background: theme.colors.background.main,
+            color: theme.colors.text.main,
+            cursor: "pointer",
+            outline: "none",
+          }}
+        >
+          <option value="system">system</option>
+          <option value="light">light</option>
+          <option value="dark">dark</option>
+        </select>
+      </Row>
+    </section>
   );
 };
 
