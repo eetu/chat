@@ -705,6 +705,102 @@ const MessageActions = ({
         body: JSON.stringify({ text: spoken, voice }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
+      const contentType =
+        res.headers.get("content-type")?.split(";")[0].trim() ?? "audio/wav";
+      const mseMime = mseMimeFor(contentType);
+
+      // MSE path: stream-decode while the body is still arriving. Only
+      // engages for codecs the browser actually supports (typically
+      // webm/opus from the transcoded piper output). WAV stays on the
+      // blob fallback since most browsers reject `audio/wav` in MSE.
+      if (mseMime && res.body && typeof MediaSource !== "undefined") {
+        const audio = new Audio();
+        const ms = new MediaSource();
+        const objectUrl = URL.createObjectURL(ms);
+        audio.src = objectUrl;
+        audioRef.current = audio;
+        audio.onended = () => {
+          setTtsState("idle");
+          URL.revokeObjectURL(objectUrl);
+        };
+        audio.onpause = () => {
+          if (audio.ended) return;
+          setTtsState("idle");
+          URL.revokeObjectURL(objectUrl);
+          try {
+            if (ms.readyState === "open") ms.endOfStream();
+          } catch {
+            // ignore
+          }
+          audioRef.current = null;
+        };
+        audio.onerror = () => {
+          setTtsState("idle");
+          URL.revokeObjectURL(objectUrl);
+        };
+        ms.addEventListener("sourceopen", () => {
+          let sb: SourceBuffer;
+          try {
+            sb = ms.addSourceBuffer(mseMime);
+          } catch (err) {
+            console.error("mse addSourceBuffer failed", err);
+            audio.pause();
+            return;
+          }
+          const reader = res.body!.getReader();
+          const append = (chunk: ArrayBuffer) =>
+            new Promise<void>((resolve) => {
+              sb.addEventListener("updateend", () => resolve(), {
+                once: true,
+              });
+              sb.appendBuffer(chunk);
+            });
+          (async () => {
+            try {
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                if (value && value.byteLength > 0) {
+                  // Copy into a fresh ArrayBuffer — the Web Streams
+                  // reader can hand back views whose underlying buffer
+                  // is shared, and SourceBuffer.appendBuffer rejects
+                  // SharedArrayBuffer-backed views.
+                  const copy = new Uint8Array(value.byteLength);
+                  copy.set(value);
+                  await append(copy.buffer);
+                }
+              }
+              if (sb.updating) {
+                sb.addEventListener(
+                  "updateend",
+                  () => {
+                    if (ms.readyState === "open") ms.endOfStream();
+                  },
+                  { once: true },
+                );
+              } else if (ms.readyState === "open") {
+                ms.endOfStream();
+              }
+            } catch (err) {
+              console.error("mse stream pump failed", err);
+              if (ms.readyState === "open") {
+                try {
+                  ms.endOfStream("decode");
+                } catch {
+                  // ignore
+                }
+              }
+            }
+          })();
+        });
+        setTtsState("playing");
+        await audio.play();
+        return;
+      }
+
+      // Fallback: buffer the body to a Blob and let <audio> play it.
+      // Used for raw WAV (MSE rejects it on most browsers) and when
+      // MediaSource is unavailable.
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
@@ -730,6 +826,27 @@ const MessageActions = ({
       setTtsState("idle");
     }
   };
+
+  /// Map upstream Content-Type onto a MediaSource codec string the
+  /// browser will accept. Returns null for formats MSE doesn't support
+  /// (notably raw WAV in Safari / Firefox) so the caller can pick a
+  /// safe blob fallback.
+  // (Hoisted via function declaration so it can sit below the JSX block.)
+  function mseMimeFor(contentType: string): string | null {
+    if (typeof MediaSource === "undefined") return null;
+    const lower = contentType.toLowerCase();
+    const candidates: string[] = [];
+    if (lower.startsWith("audio/webm")) {
+      candidates.push('audio/webm; codecs="opus"', "audio/webm");
+    } else if (lower.startsWith("audio/ogg")) {
+      candidates.push('audio/ogg; codecs="opus"', "audio/ogg");
+    } else if (lower.startsWith("audio/mp4")) {
+      candidates.push('audio/mp4; codecs="mp4a.40.2"', "audio/mp4");
+    } else if (lower.startsWith("audio/mpeg")) {
+      candidates.push("audio/mpeg");
+    }
+    return candidates.find((c) => MediaSource.isTypeSupported(c)) ?? null;
+  }
   // Image-side actions only apply to assistant messages — user uploads
   // came from the user's own device, no point copying or re-downloading.
   const firstImage = isAssistant ? refs[0] : undefined;

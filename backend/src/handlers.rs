@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use actix_web::{web, HttpResponse};
 use actix_web_lab::sse;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -511,18 +512,27 @@ pub async fn tts(
         return HttpResponse::BadGateway()
             .json(serde_json::json!({"error": format!("upstream {status}")}));
     }
-    let bytes = match res.bytes().await {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!("piper body read failed: {e}");
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": "malformed upstream response"}));
-        }
-    };
+    // Stream the upstream body through to the client instead of
+    // buffering. The piper server emits chunked WAV (RIFF header with
+    // size = 0xFFFFFFFF) — or whatever transcoded codec is configured
+    // — so the browser can start decoding while later samples are
+    // still being synthesised. Buffering here would defeat the
+    // streaming entirely on long replies. The upstream Content-Type
+    // is forwarded verbatim so the frontend can pick MediaSource when
+    // it's a codec the browser supports.
+    let upstream_ct = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("audio/wav")
+        .to_string();
+    let stream = res
+        .bytes_stream()
+        .map_err(|e| actix_web::error::ErrorBadGateway(e.to_string()));
     HttpResponse::Ok()
-        .content_type("audio/wav")
+        .content_type(upstream_ct)
         .insert_header(("Cache-Control", "no-store"))
-        .body(bytes)
+        .streaming(stream)
 }
 
 pub async fn chat(
