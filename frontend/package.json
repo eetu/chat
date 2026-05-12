@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
-    "@tanstack/react-router": "^1.169.1",
+    "@tanstack/react-router": "^1.169.2",
     "classnames": "^2.5.1",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.45",
@@ -34,7 +34,7 @@
   },
   "devDependencies": {
     "@tanstack/eslint-plugin-router": "^1.161.6",
-    "@tanstack/router-plugin": "^1.167.33",
+    "@tanstack/router-plugin": "^1.167.35",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
@@ -43,7 +43,7 @@
     "eslint-config": "github:eetu/eslint-config#v2.0.1",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
-    "vite": "^8.0.10"
+    "vite": "^8.0.12"
   },
   "packageManager": "yarn@4.12.0"
 }
