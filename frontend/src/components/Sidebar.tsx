@@ -305,7 +305,7 @@ const ConversationRow = ({
   };
 
   return (
-    <SwipeRow onDelete={onDelete}>
+    <SwipeRow onDelete={onDelete} hideMouseDelete={editing}>
       <div css={{ position: "relative" }}>
         {editing ? (
           <div

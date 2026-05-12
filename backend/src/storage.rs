@@ -533,7 +533,14 @@ impl Storage {
                 })
             },
         )?;
-        rows.collect::<Result<_, _>>().map_err(Into::into)
+        let hits: Vec<SearchHit> = rows.collect::<Result<_, _>>()?;
+        tracing::debug!(
+            user = user_sub,
+            fts = %fts,
+            hit_count = hits.len(),
+            "search executed",
+        );
+        Ok(hits)
     }
 
     /// Remove a user and everything that depends on them. FK cascades
@@ -618,37 +625,53 @@ fn bootstrap_search_index(conn: &Connection) -> Result<(), StorageError> {
         END;
         "#,
     )?;
+    // FTS5 external-content tables expose a `rebuild` command that
+    // (re)populates the index from the underlying `messages` table.
+    // Run it whenever the index is shorter than the live message
+    // count — covers the first-time migration on an existing DB and
+    // catches any drift from a missed trigger.
     let fts_rows: i64 =
         conn.query_row("SELECT COUNT(*) FROM messages_fts", [], |r| r.get(0))?;
-    if fts_rows == 0 {
-        let inserted = conn.execute(
-            "INSERT INTO messages_fts(rowid, content)
-             SELECT id, content FROM messages WHERE content != ''",
+    let msg_rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE content != ''",
+        [],
+        |r| r.get(0),
+    )?;
+    if fts_rows < msg_rows {
+        conn.execute(
+            "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
             [],
         )?;
-        if inserted > 0 {
-            tracing::info!("search index: backfilled {inserted} messages");
-        }
+        tracing::info!(
+            "search index: rebuilt ({fts_rows} → {msg_rows} messages)"
+        );
     }
     Ok(())
 }
 
 /// Turn raw user input into a defensible FTS5 query. Each whitespace
-/// token becomes a prefix-matched phrase; phrases are ANDed together.
-/// Inner double quotes are escaped so a stray `"` in the input can't
-/// blow up the parser. Returns empty when the input has no usable
-/// tokens.
+/// token becomes a bare prefix-match (`word*`) and tokens are ANDed
+/// together. FTS5's prefix operator only applies to plain terms — the
+/// previous `"word"*` form (phrase + prefix) is invalid grammar and
+/// silently returns no matches. Characters FTS5 would interpret as
+/// query syntax are stripped so a stray punctuation mark can't blow
+/// up the parser.
 fn build_fts_query(raw: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     for token in raw.split_whitespace() {
         let cleaned: String = token
             .chars()
-            .filter(|c| !matches!(c, '"' | '(' | ')' | '*'))
+            .filter(|c| {
+                !matches!(
+                    *c,
+                    '"' | '\'' | '(' | ')' | '*' | ':' | '!' | '^' | '+'
+                )
+            })
             .collect();
         if cleaned.is_empty() {
             continue;
         }
-        parts.push(format!("\"{cleaned}\"*"));
+        parts.push(format!("{cleaned}*"));
     }
     parts.join(" ")
 }
