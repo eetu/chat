@@ -273,6 +273,16 @@ const ConversationRow = ({
     setMenuOpen(true);
   };
 
+  const openMenuAtPoint = (x: number, y: number) => {
+    // Anchor near the finger but inset from the viewport edges so the
+    // menu never overflows on narrow phones.
+    setMenuPos({
+      top: Math.min(y + 8, window.innerHeight - 120),
+      right: Math.max(8, window.innerWidth - x - 8),
+    });
+    setMenuOpen(true);
+  };
+
   const startEdit = () => {
     setMenuOpen(false);
     setDraft(convo.title);
@@ -309,7 +319,7 @@ const ConversationRow = ({
   };
 
   return (
-    <SwipeRow onDelete={onDelete} hideMouseDelete>
+    <SwipeRow onDelete={onDelete} hideMouseDelete onLongPress={openMenuAtPoint}>
       <div
         css={{
           position: "relative",
