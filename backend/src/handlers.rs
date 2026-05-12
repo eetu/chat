@@ -817,7 +817,26 @@ pub async fn chat(
                 )
                 .await
             } else {
-                ollama::generate_image(&state_clone, &model_for_gen, final_prompt).await
+                // Race the Ollama image POST against client disconnect.
+                // There's no public cancel endpoint upstream, but
+                // dropping the reqwest future closes the connection —
+                // which is enough to stop the response from landing in
+                // storage. If Ollama keeps generating server-side it's
+                // a sunk cost; the bytes never reach the user.
+                let cancel_ollama = tx.clone();
+                tokio::select! {
+                    r = ollama::generate_image(
+                        &state_clone,
+                        &model_for_gen,
+                        final_prompt,
+                    ) => r,
+                    _ = cancel_ollama.closed() => {
+                        tracing::info!(
+                            "ollama image gen cancelled by client"
+                        );
+                        Err(ollama::ChatStreamError::Cancelled)
+                    }
+                }
             };
             match gen_result {
                 Ok(b64) => {
