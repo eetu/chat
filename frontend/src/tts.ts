@@ -123,11 +123,12 @@ export const pickVoice = (
   return voices.find((v) => v.family === lang)?.slug ?? voices[0]?.slug;
 };
 
-/// Best-effort markdown → plain text for TTS. Strips fences, inline
-/// code, links, headers, list markers, emphasis. Not a full parser —
-/// the goal is to keep piper from announcing "asterisk asterisk"
-/// around every emphasized word, not to round-trip prose perfectly.
-export const markdownToSpeech = (md: string): string =>
+/// Best-effort markdown → plain text. Strips fences, inline code,
+/// links, headers, list markers, emphasis. Not a full parser — the
+/// goal is to keep piper from announcing "asterisk asterisk" around
+/// every emphasized word, and to keep the search palette's snippet
+/// readable when the source content was markdown.
+export const stripMarkdown = (md: string): string =>
   md
     .replace(/```[\s\S]*?```/g, " ") // fenced code blocks
     .replace(/`([^`]+)`/g, "$1") // inline code
@@ -148,6 +149,9 @@ export const markdownToSpeech = (md: string): string =>
     .replace(/\r?\n/g, " ") // line breaks
     .replace(/[ \t]+/g, " ")
     .trim();
+
+/// Backwards-compat re-export for the TTS call site.
+export const markdownToSpeech = stripMarkdown;
 
 export const readVoiceOverride = (): string | null => {
   try {

@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 
 import { api, SearchHit } from "../api";
 import { mq } from "../mq";
+import { stripMarkdown } from "../tts";
 
 type Props = {
   onClose: () => void;
@@ -310,9 +311,12 @@ const HitRow = ({
   );
 };
 
-/// Convert FTS5 snippet markers `[term]` into highlighted spans.
+/// Convert FTS5 snippet markers `[term]` into highlighted spans. The
+/// snippet text is run through the markdown stripper first so backticks
+/// / asterisks from the source content don't leak through as literal
+/// characters in the result list.
 const renderSnippet = (snippet: string, accent: string) => {
-  const parts = snippet.split(/(\[[^\]]+\])/g);
+  const parts = stripMarkdown(snippet).split(/(\[[^\]]+\])/g);
   // The snippet is a flat list of static fragments derived from the
   // upstream snippet text; index keys are safe — they don't reorder.
   return parts.map((part, i) => {
