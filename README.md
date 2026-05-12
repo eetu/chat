@@ -12,12 +12,22 @@ to [halo](../hcc) — same design tokens, different glyph, same warm orange dot.
 - Configurable retention (default 30 days)
 - Image generation via Ollama's `/v1/images/generations`, plus img2img through
   ComfyUI Flux Kontext (multi-image references, live progress + preview)
-- Voice input via whisper.cpp (`/inference`) and read-aloud via piper-tts
-  (`/`) — both LAN endpoints; client transcodes mic audio to 16 kHz mono WAV
-  before upload
+- Voice input via whisper.cpp with browser-side Web Audio VAD — utterances
+  segment on silence and transcribe one at a time so dictation stays stable
+- Read-aloud via piper-tts (opus over chunked ogg) streamed straight into a
+  MediaSource for instant playback; falls back to WAV when the browser
+  can't decode opus (looking at you, Safari)
+- RAG over uploaded text / markdown / PDF documents — per-document embedding
+  model (picked from whatever Ollama installs surface the `embedding`
+  capability), cosine retrieval at chat time, source chip under each
+  assistant reply naming the docs it drew from
+- Full-text search across every message with FTS5; ⌘K sidebar palette
+  highlights matches and scrolls the chat to the hit
 - Optional prompt refiner with persona-flavoured rewrites for image generation
-- Manual rename + edit-and-resend + remix-this-image flows
+- Manual rename + edit-and-resend + regenerate-from-user + remix-this-image flows
 - Code blocks render with language label, streaming-fence balancing, copy button
+- Mermaid diagrams render lazily from ```mermaid fences
+- Light / dark / system theme override + STT language picker in settings
 - Per-user rate limits, image-gen semaphore, CSP + magic-byte MIME sniffing on
   uploaded images
 - No navbars, no chrome — just the conversation
@@ -26,16 +36,16 @@ to [halo](../hcc) — same design tokens, different glyph, same warm orange dot.
 
 | Layer | Tech |
 |---|---|
-| Backend | Rust, actix-web 4, actix-web-lab SSE, reqwest stream → Ollama NDJSON, ComfyUI WS for progress, tokio semaphore for GPU coordination, rusqlite (bundled), actix-session cookie store, tracing-actix-web spans |
-| Frontend | Vite + React 19, Emotion theme (copied from halo), TanStack Router (file-based), SWR, MediaRecorder + Web Audio API for voice in |
+| Backend | Rust, actix-web 4, actix-web-lab SSE, reqwest stream → Ollama NDJSON, ComfyUI WS for progress, tokio semaphore for GPU coordination, rusqlite (bundled with FTS5), `pdf-extract` for PDF text, actix-session cookie store, tracing-actix-web spans |
+| Frontend | Vite + React 19, Emotion theme (copied from halo), TanStack Router (file-based), SWR, MediaRecorder + Web Audio analyser for VAD, MediaSource for streaming TTS, mermaid.js (lazy), highlight.js for code |
 | Auth | OIDC (kanidm) — code + PKCE flow with cookie session. Dev fallback via `DEV_AUTH=1`. |
-| Persistence | SQLite (`chat.db` by default), schema bootstrapped on startup |
+| Persistence | SQLite (`chat.db` by default), schema bootstrapped on startup; FTS5 mirror + triggers rebuilt on drift |
 
 ## Layout
 
 ```
 chat/
-├── backend/         actix-web server, SSE proxy, SQLite, auth
+├── backend/         actix-web server, SSE proxy, SQLite, auth, RAG
 ├── frontend/        React SPA (Vite)
 ├── .claude/skills/  chat-design — design system + brand guidelines
 └── README.md
@@ -78,6 +88,21 @@ In dev mode (`DEV_AUTH=1`), hitting "sign in" calls `/auth/login` which writes
 a cookie session for user `dev`. Override with `?username=foo` for multiple
 users on one box.
 
+## Companion services
+
+These features expect dedicated LAN endpoints, deployed via the sibling
+[`mini`](../mini) IaC repo. All three sit behind Caddy on the Mac mini:
+
+| Service | Endpoint | Provides |
+|---|---|---|
+| whisper.cpp HTTP server | `WHISPER_URL` (`/inference`) | Voice input transcription |
+| piper-tts | `PIPER_URL` (`POST /` returns chunked ogg/opus, `GET /voices` lists) | Read-aloud |
+| ComfyUI | `COMFYUI_URL` | Flux Kontext img2img with WS progress |
+
+The chat features auto-detect availability via the `/status` payload — set
+each env var only when its endpoint is reachable; the matching UI hides
+otherwise.
+
 ## Configuration
 
 See `backend/.env.example` for the full list. Key values:
@@ -90,6 +115,9 @@ See `backend/.env.example` for the full list. Key values:
 | `PROMPT_REFINER_MODEL` | unset | Chat model that rewrites image-gen prompts before they hit the image runner |
 | `WHISPER_URL` | unset | whisper.cpp HTTP server (`/inference`) for voice input |
 | `PIPER_URL` | unset | piper-tts HTTP server (`POST /`) for read-aloud |
+| `EMBEDDING_MODEL` | unset | Default Ollama embedding model for RAG ingest + retrieval; users override per-upload via the settings dropdown |
+| `RAG_TOP_K` | `4` | How many retrieved chunks to inject as system context per turn |
+| `MAX_DOCUMENT_MB` | `10` | Max raw upload size for RAG documents (text or PDF) |
 | `CHAT_TTL_DAYS` | `30` | Conversations older than this are purged hourly |
 | `CHAT_DB_PATH` | `chat.db` | SQLite file (relative to backend cwd) |
 | `CHAT_RATE_PER_MIN` | `60` | Per-user token-bucket cap on `/api/chat`. `0` disables. |
@@ -107,17 +135,20 @@ See `backend/.env.example` for the full list. Key values:
 ```
 GET    /status                         { upstream, model_locked, auth,
                                          refiner_available, img2img_available,
-                                         voice_in_available, voice_out_available }
+                                         voice_in_available, voice_out_available,
+                                         rag_available }
 GET    /auth/login                     start auth (dev: writes session; oidc: redirect)
 GET    /auth/callback                  oidc callback (validates state + nonce + id_token)
 POST   /auth/logout                    clear session
 
 GET    /api/me                         { sub, username } or 401
 DELETE /api/me                         account self-delete (cascades all data)
-GET    /api/models                     proxy of /api/tags (or { locked: true })
+GET    /api/models                     installed Ollama models, filtered to those with chat caps
 GET    /api/models/caps?model=…        capability snapshot { vision, tools, chat, image_gen }
 GET    /api/personas                   list refiner-persona presets
 GET    /api/voices                     list piper voices (proxied)
+GET    /api/embedding-models           installed Ollama models with the `embedding` capability
+GET    /api/search?q=…                 FTS5 full-text search across the user's messages
 
 GET    /api/conversations              list user's conversations
 POST   /api/conversations              { title?, model? } → Conversation
@@ -128,17 +159,67 @@ DELETE /api/conversations/{id}/messages/{msg_id}            delete from row onwa
 POST   /api/conversations/{id}/messages/{msg_id}/cancel     interrupt pending image job
 GET    /api/conversations/{id}/messages/{msg_id}/image/{idx}  blob (ETag + immutable cache)
 
+GET    /api/documents                  list uploaded RAG documents
+POST   /api/documents                  { name, content_b64, mime?, model? } → Document
+                                       Accepts text, markdown, or PDF (server-side text
+                                       extract). Chunked + embedded once at upload.
+DELETE /api/documents/{id}             cascade-delete document + chunks
+
 POST   /api/chat                       { conv_id, content, model?, images?, mode?,
-                                         refine?, persona?, retry_assistant_id? }
-                                       → SSE stream. Events:
+                                         refine?, persona?, retry_assistant_id?,
+                                         regenerate_from_user? } → SSE stream. Events:
                                          delta (raw text), done ({conv_id}),
                                          error ({message}), stats ({tokens,
                                          prompt_tokens, tokens_per_sec}),
+                                         context ({sources: [{name, score}]}),
                                          progress ({value, max}),
                                          preview ({mime, b64}), queued
-POST   /api/transcribe                 raw audio body → { text }  (whisper.cpp)
-POST   /api/tts                        { text, voice? } → audio/wav  (piper)
+POST   /api/transcribe?lang=…          raw audio body → { text }  (whisper.cpp)
+POST   /api/tts                        { text, voice?, format? } → audio/ogg|wav (piper)
 ```
+
+## Voice dictation
+
+The mic button records utterance-by-utterance. The browser:
+
+1. Opens a single mic stream + spins up a Web Audio analyser
+2. Walks the RMS energy every animation frame. Speech is confirmed after
+   ≥250 ms above an RMS threshold; an utterance ends after 700 ms of silence
+3. Each utterance gets its own MediaRecorder. On VAD silence the recorder is
+   stopped → the resulting WebM blob is appended to a serial transcribe
+   queue → a fresh recorder starts for the next utterance
+4. Each transcribe pass uploads as 16 kHz mono WAV (whisper.cpp's dr_wav
+   decoder rejects opus / webm). Transcripts append in speech order
+
+This keeps already-committed text immutable (whisper isn't deterministic on
+re-runs) and discards trailing segments that didn't actually contain speech,
+so the stop click itself doesn't show up as a phantom utterance. Language
+hint (`?lang=`) defaults to the browser locale; settings can pin to en / fi
+/ sv.
+
+## RAG
+
+Upload a text, markdown, or PDF file in **settings → documents**. The
+backend:
+
+1. Detects the format from magic bytes (`%PDF-` or UTF-8 text)
+2. Extracts plain text — `pdf_extract` for PDFs, raw decode for text/md
+3. Slides over the text with overlapping ~800-character windows
+4. Embeds each chunk via Ollama using the model the user picked at upload
+   time (stored per-document — the embedding model can be switched freely
+   for new uploads without invalidating older docs)
+5. Stores chunks + f32 vectors as BLOB columns
+
+On every chat turn the user's prompt is embedded once per distinct model in
+their corpus, cosine-ranked against every chunk, and the top `RAG_TOP_K`
+chunks (score > 0.3) prepend as a system message with `[doc-name]` tags.
+The UI surfaces a small "from: [docA] [docB]" chip under the assistant
+reply via a streaming `context` SSE event so the user can see what was
+consulted. Failures stay non-fatal — the assistant just sees the prompt
+without retrieved context.
+
+In-memory cosine works fine for a few hundred chunks; sqlite-vec or a
+proper ANN index is the upgrade path when the corpus grows.
 
 ## Design system
 
@@ -164,9 +245,9 @@ GitHub Actions in `.github/workflows/`:
 
 ## Roadmap / TODO
 
-- [ ] Mermaid diagram rendering
-- [ ] File ingestion / RAG for PDFs and docs — see
-  `.claude/skills/chat-design/README.md` → "Future renderer extensions",
-  two-tier plan (naive injection vs. embed+retrieve via `sqlite-vec`)
-- [ ] Conversation search (FTS5 + ⌘K palette)
-- [ ] Long-press for the conversation action menu on touch devices
+- [ ] Persist token / TPS stats so the caption survives reloads
+- [ ] Per-conversation RAG opt-out toggle
+- [ ] Conversation export / import (JSON dump with image blobs)
+- [ ] sqlite-vec for RAG retrieval when the corpus outgrows in-memory cosine
+- [ ] OIDC RP-initiated logout (currently relies on provider session TTL)
+- [ ] Front-end test setup
