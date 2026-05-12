@@ -276,11 +276,27 @@ const Composer = ({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recorderStreamRef = useRef<MediaStream | null>(null);
   const recorderChunksRef = useRef<Blob[]>([]);
+  // Snapshot of the textarea contents at recording start. Each
+  // streaming transcript replaces the live tail so the user sees the
+  // running transcript without losing whatever they typed before.
+  const voiceBaseRef = useRef<string>("");
+  // Periodic re-transcribe handle while the recorder is live.
+  const voiceTickRef = useRef<number | null>(null);
+  // Set while a tick is mid-request so we don't queue overlapping
+  // /api/transcribe calls.
+  const voiceInflightRef = useRef(false);
 
   const stopVoiceTracks = () => {
     recorderStreamRef.current?.getTracks().forEach((t) => t.stop());
     recorderStreamRef.current = null;
     recorderRef.current = null;
+  };
+
+  const stopVoiceTicker = () => {
+    if (voiceTickRef.current != null) {
+      window.clearInterval(voiceTickRef.current);
+      voiceTickRef.current = null;
+    }
   };
 
   const pickRecorderMime = () => {
@@ -292,6 +308,67 @@ const Composer = ({
       "audio/mp4",
     ];
     return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
+  };
+
+  /// Send the cumulative recording to whisper and splice the result
+  /// into the textarea. `final` runs at recording stop, marks the
+  /// state idle, and stops further ticks.
+  const transcribePartial = async (final: boolean) => {
+    const rec = recorderRef.current;
+    if (voiceInflightRef.current) return;
+    if (!final && (!rec || rec.state !== "recording")) return;
+    if (!final && rec) {
+      // Flush the recorder so the latest audio lands in our chunks
+      // buffer. Give the data callback a tick to fire.
+      try {
+        rec.requestData();
+      } catch {
+        // Some implementations throw when called rapidly; just skip
+        // this tick.
+        return;
+      }
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+    }
+    const chunks = recorderChunksRef.current.slice();
+    if (chunks.length === 0) {
+      if (final) setVoiceState("idle");
+      return;
+    }
+    voiceInflightRef.current = true;
+    if (final) setVoiceState("transcribing");
+    try {
+      const mime =
+        recorderRef.current?.mimeType ?? chunks[0]?.type ?? "audio/webm";
+      const blob = new Blob(chunks, { type: mime });
+      const wav = await encodeAsWav(blob);
+      const res = await fetch("/api/transcribe", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": wav.type },
+        body: wav,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(`${res.status} ${text}`);
+      }
+      const data = (await res.json()) as { text: string };
+      const transcript = data.text?.trim() ?? "";
+      const base = voiceBaseRef.current;
+      const sep =
+        transcript && base && !base.endsWith(" ") && !base.endsWith("\n")
+          ? " "
+          : "";
+      setValue(transcript ? `${base}${sep}${transcript}` : base);
+      if (final) textareaRef.current?.focus();
+    } catch (e) {
+      if (final) setVoiceError(`transcribe failed: ${String(e)}`);
+    } finally {
+      voiceInflightRef.current = false;
+      if (final) {
+        recorderChunksRef.current = [];
+        setVoiceState("idle");
+      }
+    }
   };
 
   const startVoice = async () => {
@@ -307,6 +384,7 @@ const Composer = ({
     }
     recorderStreamRef.current = stream;
     recorderChunksRef.current = [];
+    voiceBaseRef.current = value;
     const mime = pickRecorderMime();
     let recorder: MediaRecorder;
     try {
@@ -321,56 +399,25 @@ const Composer = ({
       if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data);
     };
     recorder.onstop = () => {
-      const blobType = recorder.mimeType || mime || "audio/webm";
-      const blob = new Blob(recorderChunksRef.current, { type: blobType });
-      recorderChunksRef.current = [];
+      stopVoiceTicker();
       stopVoiceTracks();
-      void uploadVoice(blob);
+      void transcribePartial(true);
     };
     recorder.start();
     setVoiceState("recording");
-  };
-
-  const uploadVoice = async (blob: Blob) => {
-    if (blob.size === 0) {
-      setVoiceState("idle");
-      return;
-    }
-    setVoiceState("transcribing");
-    try {
-      // whisper.cpp's HTTP server decodes via dr_wav and rejects opus /
-      // webm with a generic 400. Transcode here to 16 kHz mono PCM WAV
-      // — the format whisper expects natively — using the Web Audio API.
-      const wav = await encodeAsWav(blob);
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": wav.type },
-        body: wav,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`${res.status} ${text}`);
-      }
-      const data = (await res.json()) as { text: string };
-      const transcript = data.text?.trim() ?? "";
-      if (transcript) {
-        setValue((prev) => {
-          const sep =
-            prev && !prev.endsWith(" ") && !prev.endsWith("\n") ? " " : "";
-          return prev + sep + transcript;
-        });
-        textareaRef.current?.focus();
-      }
-    } catch (e) {
-      setVoiceError(`transcribe failed: ${String(e)}`);
-    } finally {
-      setVoiceState("idle");
-    }
+    // Re-transcribe the cumulative recording every ~2.5 s so the user
+    // sees the running transcript instead of dictating into a void.
+    // Whisper handles the same audio being sent repeatedly; the cost
+    // is a steady stream of small inference jobs, which is fine for a
+    // LAN endpoint.
+    voiceTickRef.current = window.setInterval(() => {
+      void transcribePartial(false);
+    }, 2500);
   };
 
   const stopVoice = () => {
     if (voiceState !== "recording") return;
+    stopVoiceTicker();
     recorderRef.current?.stop();
   };
 
@@ -381,6 +428,7 @@ const Composer = ({
 
   useEffect(() => {
     return () => {
+      stopVoiceTicker();
       if (recorderRef.current && recorderRef.current.state !== "inactive") {
         try {
           recorderRef.current.stop();
