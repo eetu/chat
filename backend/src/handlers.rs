@@ -491,9 +491,14 @@ pub async fn tts(
     if let Some(voice) = body.voice.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         payload["voice"] = serde_json::Value::String(voice.to_string());
     }
+    // Request opus over ogg from the upstream — ~32 kbps VBR for voice
+    // is roughly 10× smaller than raw PCM WAV and decodes inside the
+    // browser's MediaSource path so playback starts as soon as the
+    // first packets land.
     let res = match state
         .http_client
         .post(format!("{}/", base.trim_end_matches('/')))
+        .query(&[("format", "opus")])
         .json(&payload)
         .send()
         .await
