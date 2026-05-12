@@ -11,6 +11,7 @@ import {
 
 import { resizeImageForUpload } from "../image";
 import { mq } from "../mq";
+import { resolveSttLang } from "../tts";
 import ModelPicker from "./ModelPicker";
 
 /**
@@ -270,32 +271,66 @@ const Composer = ({
   // the shell.
   const dragDepthRef = useRef(0);
 
-  type VoiceState = "idle" | "recording" | "transcribing";
+  type VoiceState = "idle" | "listening" | "speaking" | "stopping";
   const [voiceState, setVoiceState] = useState<VoiceState>("idle");
   const [voiceError, setVoiceError] = useState<string | null>(null);
-  const recorderRef = useRef<MediaRecorder | null>(null);
-  const recorderStreamRef = useRef<MediaStream | null>(null);
-  const recorderChunksRef = useRef<Blob[]>([]);
-  // Snapshot of the textarea contents at recording start. Each
-  // streaming transcript replaces the live tail so the user sees the
-  // running transcript without losing whatever they typed before.
+  // Number of segments queued / in flight. Drives the small "…" badge
+  // so the user knows tail audio is still being committed after stop.
+  const [voicePending, setVoicePending] = useState(0);
+  const voiceStreamRef = useRef<MediaStream | null>(null);
+  // Each utterance gets its own MediaRecorder so the resulting blob is
+  // a self-contained WebM (not a mid-stream chunk that's unplayable
+  // without the init segment). On VAD silence we stop the current
+  // recorder, hand the blob to the transcribe queue, and spin a fresh
+  // recorder for the next utterance.
+  const segmentRecorderRef = useRef<MediaRecorder | null>(null);
+  const segmentChunksRef = useRef<Blob[]>([]);
+  const segmentMimeRef = useRef<string>("");
+  // True once the VAD has flagged this segment as actual speech.
+  // Stays false while we're only hearing ambient noise or short
+  // transients like a touchpad click — the segment is then dropped
+  // instead of going to whisper, so phantom utterances don't land in
+  // the textarea every time the user stops.
+  const segmentHadSpeechRef = useRef(false);
+  // VAD plumbing — analyser samples input RMS so we can detect speech
+  // vs silence in pure Web Audio, no extra dependency.
+  const vadCtxRef = useRef<AudioContext | null>(null);
+  const vadAnalyserRef = useRef<AnalyserNode | null>(null);
+  const vadFrameRef = useRef<number | null>(null);
+  // True after the user hits stop; the segment recorder's `onstop`
+  // checks this so it doesn't spin up another segment.
+  const voiceFinalizingRef = useRef(false);
+  // Serial queue: each finalized blob is appended to this chain so
+  // transcripts land in speech order even if a later one returns
+  // faster than an earlier one.
+  const voiceQueueRef = useRef<Promise<void>>(Promise.resolve());
+  // Snapshot of the textarea contents at recording start, kept for
+  // bookkeeping symmetry with the previous single-shot path.
   const voiceBaseRef = useRef<string>("");
-  // Periodic re-transcribe handle while the recorder is live.
-  const voiceTickRef = useRef<number | null>(null);
-  // Set while a tick is mid-request so we don't queue overlapping
-  // /api/transcribe calls.
-  const voiceInflightRef = useRef(false);
+
+  // VAD tuning. RMS over [0,1]; default mic gain on most laptops sits
+  // around 0.02–0.05 for ambient noise and 0.1+ for speech. Need at
+  // least 250 ms of audio above the threshold before we'll treat it
+  // as speech — kills cough / keyboard tap false starts. End an
+  // utterance after 700 ms of silence following speech.
+  const VAD_RMS_THRESHOLD = 0.04;
+  const VAD_MIN_SPEECH_MS = 250;
+  const VAD_SILENCE_MS = 700;
 
   const stopVoiceTracks = () => {
-    recorderStreamRef.current?.getTracks().forEach((t) => t.stop());
-    recorderStreamRef.current = null;
-    recorderRef.current = null;
+    voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
+    voiceStreamRef.current = null;
   };
 
-  const stopVoiceTicker = () => {
-    if (voiceTickRef.current != null) {
-      window.clearInterval(voiceTickRef.current);
-      voiceTickRef.current = null;
+  const stopVadLoop = () => {
+    if (vadFrameRef.current != null) {
+      window.cancelAnimationFrame(vadFrameRef.current);
+      vadFrameRef.current = null;
+    }
+    vadAnalyserRef.current = null;
+    if (vadCtxRef.current) {
+      void vadCtxRef.current.close().catch(() => {});
+      vadCtxRef.current = null;
     }
   };
 
@@ -310,65 +345,145 @@ const Composer = ({
     return candidates.find((t) => MediaRecorder.isTypeSupported(t)) ?? "";
   };
 
-  /// Send the cumulative recording to whisper and splice the result
-  /// into the textarea. `final` runs at recording stop, marks the
-  /// state idle, and stops further ticks.
-  const transcribePartial = async (final: boolean) => {
-    const rec = recorderRef.current;
-    if (voiceInflightRef.current) return;
-    if (!final && (!rec || rec.state !== "recording")) return;
-    if (!final && rec) {
-      // Flush the recorder so the latest audio lands in our chunks
-      // buffer. Give the data callback a tick to fire.
-      try {
-        rec.requestData();
-      } catch {
-        // Some implementations throw when called rapidly; just skip
-        // this tick.
-        return;
-      }
-      await new Promise<void>((resolve) => window.setTimeout(resolve, 50));
+  /// Push a finalized utterance blob onto the serial transcribe queue.
+  /// Each task awaits the previous so transcripts land in speech order
+  /// even if one POST is slower than the next.
+  const enqueueTranscribe = (blob: Blob) => {
+    if (blob.size === 0) return;
+    setVoicePending((n) => n + 1);
+    voiceQueueRef.current = voiceQueueRef.current
+      .then(async () => {
+        try {
+          const wav = await encodeAsWav(blob);
+          const lang = resolveSttLang();
+          const url = lang
+            ? `/api/transcribe?lang=${encodeURIComponent(lang)}`
+            : "/api/transcribe";
+          const res = await fetch(url, {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": wav.type },
+            body: wav,
+          });
+          if (!res.ok) return;
+          const data = (await res.json()) as { text: string };
+          const transcript = data.text?.trim() ?? "";
+          if (transcript) {
+            setValue((prev) => {
+              const sep =
+                prev && !prev.endsWith(" ") && !prev.endsWith("\n") ? " " : "";
+              return prev + sep + transcript;
+            });
+          }
+        } catch (e) {
+          // Per-segment failures don't poison the queue.
+          console.error("segment transcribe failed", e);
+        }
+      })
+      .finally(() => {
+        setVoicePending((n) => Math.max(0, n - 1));
+      });
+  };
+
+  const startSegmentRecorder = (stream: MediaStream) => {
+    if (!segmentMimeRef.current) {
+      segmentMimeRef.current = pickRecorderMime();
     }
-    const chunks = recorderChunksRef.current.slice();
-    if (chunks.length === 0) {
-      if (final) setVoiceState("idle");
+    segmentChunksRef.current = [];
+    segmentHadSpeechRef.current = false;
+    const mime = segmentMimeRef.current;
+    let recorder: MediaRecorder;
+    try {
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
+    } catch (e) {
+      setVoiceError(`recorder failed: ${String(e)}`);
       return;
     }
-    voiceInflightRef.current = true;
-    if (final) setVoiceState("transcribing");
-    try {
-      const mime =
-        recorderRef.current?.mimeType ?? chunks[0]?.type ?? "audio/webm";
-      const blob = new Blob(chunks, { type: mime });
-      const wav = await encodeAsWav(blob);
-      const res = await fetch("/api/transcribe", {
-        method: "POST",
-        credentials: "include",
-        headers: { "content-type": wav.type },
-        body: wav,
-      });
-      if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        throw new Error(`${res.status} ${text}`);
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) segmentChunksRef.current.push(e.data);
+    };
+    recorder.onstop = () => {
+      const blobMime = recorder.mimeType || mime || "audio/webm";
+      const chunks = segmentChunksRef.current.slice();
+      segmentChunksRef.current = [];
+      const hadSpeech = segmentHadSpeechRef.current;
+      segmentHadSpeechRef.current = false;
+      const blob = new Blob(chunks, { type: blobMime });
+      // Only commit segments the VAD actually saw speech in. The
+      // stop button itself produces a short click that would
+      // otherwise reach whisper as a phantom utterance.
+      if (hadSpeech && blob.size > 0) enqueueTranscribe(blob);
+      const liveStream = voiceStreamRef.current;
+      if (!voiceFinalizingRef.current && liveStream) {
+        startSegmentRecorder(liveStream);
       }
-      const data = (await res.json()) as { text: string };
-      const transcript = data.text?.trim() ?? "";
-      const base = voiceBaseRef.current;
-      const sep =
-        transcript && base && !base.endsWith(" ") && !base.endsWith("\n")
-          ? " "
-          : "";
-      setValue(transcript ? `${base}${sep}${transcript}` : base);
-      if (final) textareaRef.current?.focus();
-    } catch (e) {
-      if (final) setVoiceError(`transcribe failed: ${String(e)}`);
-    } finally {
-      voiceInflightRef.current = false;
-      if (final) {
-        recorderChunksRef.current = [];
-        setVoiceState("idle");
+    };
+    recorder.start();
+    segmentRecorderRef.current = recorder;
+  };
+
+  /// Walk the analyser's RMS energy. Speech starts when energy stays
+  /// above threshold for `VAD_MIN_SPEECH_MS`; it ends after
+  /// `VAD_SILENCE_MS` of sub-threshold audio. End-of-utterance stops
+  /// the current segment recorder, which hands off the blob and
+  /// chains the next recorder.
+  const startVadLoop = (stream: MediaStream) => {
+    const AC =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext: typeof AudioContext })
+        .webkitAudioContext;
+    const ctx = new AC();
+    vadCtxRef.current = ctx;
+    const source = ctx.createMediaStreamSource(stream);
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0;
+    source.connect(analyser);
+    vadAnalyserRef.current = analyser;
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    let speechStartedAt: number | null = null;
+    let silenceStartedAt: number | null = null;
+    const tick = () => {
+      const a = vadAnalyserRef.current;
+      if (!a) return;
+      a.getByteTimeDomainData(data);
+      let sum = 0;
+      for (let i = 0; i < data.length; i++) {
+        const v = (data[i] - 128) / 128;
+        sum += v * v;
       }
-    }
+      const rms = Math.sqrt(sum / data.length);
+      const now = performance.now();
+      if (rms > VAD_RMS_THRESHOLD) {
+        silenceStartedAt = null;
+        if (speechStartedAt == null) speechStartedAt = now;
+        if (now - speechStartedAt >= VAD_MIN_SPEECH_MS) {
+          segmentHadSpeechRef.current = true;
+          setVoiceState((s) => (s === "listening" ? "speaking" : s));
+        }
+      } else {
+        if (silenceStartedAt == null) silenceStartedAt = now;
+        if (
+          speechStartedAt != null &&
+          now - speechStartedAt >= VAD_MIN_SPEECH_MS &&
+          now - silenceStartedAt >= VAD_SILENCE_MS
+        ) {
+          speechStartedAt = null;
+          silenceStartedAt = null;
+          setVoiceState((s) => (s === "speaking" ? "listening" : s));
+          const r = segmentRecorderRef.current;
+          if (r && r.state === "recording") {
+            try {
+              r.stop();
+            } catch {
+              // ignore — onstop will fire either way
+            }
+          }
+        }
+      }
+      vadFrameRef.current = window.requestAnimationFrame(tick);
+    };
+    vadFrameRef.current = window.requestAnimationFrame(tick);
   };
 
   const startVoice = async () => {
@@ -378,64 +493,59 @@ const Composer = ({
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setVoiceError(`mic unavailable: ${msg}`);
+      setVoiceError(`mic unavailable: ${String(e)}`);
       return;
     }
-    recorderStreamRef.current = stream;
-    recorderChunksRef.current = [];
+    voiceStreamRef.current = stream;
     voiceBaseRef.current = value;
-    const mime = pickRecorderMime();
-    let recorder: MediaRecorder;
-    try {
-      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : {});
-    } catch (e) {
-      stopVoiceTracks();
-      setVoiceError(`recorder failed: ${String(e)}`);
-      return;
-    }
-    recorderRef.current = recorder;
-    recorder.ondataavailable = (e) => {
-      if (e.data && e.data.size > 0) recorderChunksRef.current.push(e.data);
-    };
-    recorder.onstop = () => {
-      stopVoiceTicker();
-      stopVoiceTracks();
-      void transcribePartial(true);
-    };
-    recorder.start();
-    setVoiceState("recording");
-    // Re-transcribe the cumulative recording every ~2.5 s so the user
-    // sees the running transcript instead of dictating into a void.
-    // Whisper handles the same audio being sent repeatedly; the cost
-    // is a steady stream of small inference jobs, which is fine for a
-    // LAN endpoint.
-    voiceTickRef.current = window.setInterval(() => {
-      void transcribePartial(false);
-    }, 2500);
+    voiceFinalizingRef.current = false;
+    segmentMimeRef.current = pickRecorderMime();
+    startSegmentRecorder(stream);
+    startVadLoop(stream);
+    setVoiceState("listening");
   };
 
   const stopVoice = () => {
-    if (voiceState !== "recording") return;
-    stopVoiceTicker();
-    recorderRef.current?.stop();
+    if (voiceState === "idle" || voiceState === "stopping") return;
+    voiceFinalizingRef.current = true;
+    stopVadLoop();
+    setVoiceState("stopping");
+    const r = segmentRecorderRef.current;
+    if (r && r.state === "recording") {
+      try {
+        r.stop();
+      } catch {
+        // ignore
+      }
+    }
+    void voiceQueueRef.current
+      .catch(() => {})
+      .then(() => {
+        segmentRecorderRef.current = null;
+        stopVoiceTracks();
+        setVoiceState("idle");
+        textareaRef.current?.focus();
+      });
   };
 
   const toggleVoice = () => {
-    if (voiceState === "recording") stopVoice();
-    else if (voiceState === "idle") void startVoice();
+    if (voiceState === "idle") void startVoice();
+    else if (voiceState !== "stopping") stopVoice();
   };
 
   useEffect(() => {
     return () => {
-      stopVoiceTicker();
-      if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      voiceFinalizingRef.current = true;
+      stopVadLoop();
+      const r = segmentRecorderRef.current;
+      if (r && r.state === "recording") {
         try {
-          recorderRef.current.stop();
+          r.stop();
         } catch {
           // ignore
         }
       }
+      segmentRecorderRef.current = null;
       stopVoiceTracks();
     };
   }, []);
@@ -813,49 +923,80 @@ const Composer = ({
               </>
             )}
             {voiceInAvailable && (
-              <button
-                type="button"
-                aria-label={
-                  voiceState === "recording"
-                    ? "stop recording"
-                    : voiceState === "transcribing"
-                      ? "transcribing"
-                      : "record voice"
-                }
-                title={voiceError ?? "voice input"}
-                disabled={voiceState === "transcribing"}
-                aria-pressed={voiceState === "recording"}
-                onClick={toggleVoice}
-                css={{
-                  ...composerSubButtonCss(theme),
-                  color:
-                    voiceState === "recording"
-                      ? theme.colors.error
-                      : voiceError
+              <>
+                <button
+                  type="button"
+                  aria-label={
+                    voiceState === "idle"
+                      ? "record voice"
+                      : voiceState === "stopping"
+                        ? "finalising"
+                        : "stop recording"
+                  }
+                  title={voiceError ?? "voice input"}
+                  disabled={voiceState === "stopping"}
+                  aria-pressed={voiceState !== "idle"}
+                  onClick={toggleVoice}
+                  css={{
+                    ...composerSubButtonCss(theme),
+                    color:
+                      voiceState === "speaking"
                         ? theme.colors.error
-                        : theme.colors.text.muted,
-                  ...(voiceState === "recording"
-                    ? {
-                        animation: "chat-mic-pulse 1.2s ease-in-out infinite",
-                        "@keyframes chat-mic-pulse": {
-                          "0%, 100%": { opacity: 0.55 },
-                          "50%": { opacity: 1 },
-                        },
-                      }
-                    : {}),
-                }}
-              >
-                <span
-                  className="material-icons-outlined"
-                  css={{ fontSize: 22 }}
+                        : voiceState === "listening"
+                          ? theme.colors.activity.on
+                          : voiceError
+                            ? theme.colors.error
+                            : theme.colors.text.muted,
+                    ...(voiceState === "speaking"
+                      ? {
+                          animation: "chat-mic-pulse 1.2s ease-in-out infinite",
+                          "@keyframes chat-mic-pulse": {
+                            "0%, 100%": { opacity: 0.55 },
+                            "50%": { opacity: 1 },
+                          },
+                        }
+                      : {}),
+                  }}
                 >
-                  {voiceState === "recording"
-                    ? "stop"
-                    : voiceState === "transcribing"
-                      ? "graphic_eq"
-                      : "mic"}
-                </span>
-              </button>
+                  <span
+                    className="material-icons-outlined"
+                    css={{ fontSize: 22 }}
+                  >
+                    {voiceState === "idle"
+                      ? "mic"
+                      : voiceState === "stopping"
+                        ? "graphic_eq"
+                        : "stop"}
+                  </span>
+                </button>
+                {voiceState !== "idle" && (
+                  <span
+                    aria-live="polite"
+                    css={{
+                      ...theme.typography.caption,
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+                      color:
+                        voiceState === "speaking"
+                          ? theme.colors.error
+                          : voiceState === "listening"
+                            ? theme.colors.activity.on
+                            : theme.colors.text.muted,
+                      minWidth: 64,
+                    }}
+                  >
+                    {voiceState === "speaking"
+                      ? "speaking…"
+                      : voiceState === "listening"
+                        ? voicePending > 0
+                          ? `listening · ${voicePending}`
+                          : "listening"
+                        : voicePending > 0
+                          ? `finalising · ${voicePending}`
+                          : "finalising"}
+                  </span>
+                )}
+              </>
             )}
             {showModeToggle && (
               <button

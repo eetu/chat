@@ -3,6 +3,52 @@
 /// read-aloud action share the same logic.
 
 export const TTS_VOICE_KEY = "chat:ttsVoice";
+export const STT_LANG_KEY = "chat:sttLang";
+
+/// Languages whisper.cpp is reliably good at for short chat
+/// utterances on the default model. "auto" defers to whatever the
+/// browser locale suggests; an unrecognised locale falls back to
+/// whisper's own auto-detection.
+export const SUPPORTED_STT_LANGS = ["en", "fi", "sv"] as const;
+export type SttLang = (typeof SUPPORTED_STT_LANGS)[number];
+export type SttLangPref = SttLang | "auto";
+
+export const readSttLangPref = (): SttLangPref => {
+  try {
+    const v = window.localStorage.getItem(STT_LANG_KEY);
+    if (v === "auto") return "auto";
+    if (v && (SUPPORTED_STT_LANGS as readonly string[]).includes(v)) {
+      return v as SttLang;
+    }
+  } catch {
+    // ignore
+  }
+  return "auto";
+};
+
+export const writeSttLangPref = (value: SttLangPref) => {
+  try {
+    window.localStorage.setItem(STT_LANG_KEY, value);
+  } catch {
+    // ignore
+  }
+};
+
+/// Pick a concrete language code for the transcribe request. Returns
+/// null when no preference / locale match exists — whisper falls back
+/// to its own (often shaky on short clips) auto-detect.
+export const resolveSttLang = (): SttLang | null => {
+  const pref = readSttLangPref();
+  if (pref !== "auto") return pref;
+  const locale =
+    typeof navigator !== "undefined" && navigator.language
+      ? navigator.language.toLowerCase()
+      : "";
+  for (const code of SUPPORTED_STT_LANGS) {
+    if (locale.startsWith(code)) return code;
+  }
+  return null;
+};
 
 export type VoiceInfo = {
   slug: string;
