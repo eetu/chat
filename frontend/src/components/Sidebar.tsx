@@ -372,6 +372,14 @@ const ConversationRow = ({
                 active ? theme.colors.activity.on : "transparent"
               }`,
               background: active ? theme.colors.activity.onSoft : "transparent",
+              "@media (hover: hover)": {
+                paddingRight: 40,
+                "&:hover": {
+                  background: active
+                    ? theme.colors.activity.onSoft
+                    : theme.colors.background.main,
+                },
+              },
             }}
           >
             <div
