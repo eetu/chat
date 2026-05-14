@@ -72,6 +72,14 @@ type Props = {
   voiceInAvailable?: boolean;
   /** Available image-prompt personas. */
   personas?: Persona[];
+  /**
+   * When the chat tail is a completed image-gen reply, the route hands
+   * its first image down here so the composer can pre-load it as the
+   * seed for the next img2img turn. Auto-attached once per `id` —
+   * removing the chip (or attaching a different image) doesn't trigger
+   * a re-attach. New seeds (each successive image gen) take over.
+   */
+  suggestedSeed?: { id: string; url?: string; dataUrl?: string } | null;
   /** Imperative-handle ref. React 19 takes refs as plain props. */
   ref?: Ref<ComposerHandle>;
 };
@@ -164,6 +172,7 @@ const Composer = ({
   img2imgAvailable = false,
   voiceInAvailable = false,
   personas = [],
+  suggestedSeed = null,
   ref,
 }: Props) => {
   const theme = useTheme();
@@ -690,6 +699,65 @@ const Composer = ({
       draftRef.current = "";
     }
   };
+
+  // Pre-fill the composer with the chat's last generated image so the
+  // next prompt defaults to another img2img turn. Each seed `id` is
+  // consumed once — once attached (or once the user types / attaches
+  // their own image instead), the same id won't re-trigger. A new gen
+  // produces a fresh id and replaces the chain. `consumedSeedRef` is
+  // a ref (not state) so the consumption flag doesn't tick a re-render
+  // and re-evaluate this effect right after the setAttached lands.
+  const consumedSeedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const seed = suggestedSeed;
+    if (!seed) return;
+    if (consumedSeedRef.current === seed.id) return;
+    // Don't override an in-progress draft: if there's any user input
+    // already (attachment or text), assume they're mid-composition.
+    if (attached.length > 0 || value.length > 0) {
+      consumedSeedRef.current = seed.id;
+      return;
+    }
+    if (streaming) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        let base64 = "";
+        let preview = "";
+        if (seed.dataUrl) {
+          preview = seed.dataUrl;
+          const comma = preview.indexOf(",");
+          base64 = comma >= 0 ? preview.slice(comma + 1) : "";
+        } else if (seed.url) {
+          const blob = await (
+            await fetch(seed.url, { credentials: "include" })
+          ).blob();
+          preview = await new Promise<string>((resolve, reject) => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result));
+            r.onerror = () => reject(r.error);
+            r.readAsDataURL(blob);
+          });
+          const comma = preview.indexOf(",");
+          base64 = comma >= 0 ? preview.slice(comma + 1) : "";
+        }
+        if (cancelled || !base64) return;
+        consumedSeedRef.current = seed.id;
+        setAttached([{ base64, preview }]);
+        setImg2img(true);
+        try {
+          window.localStorage.setItem(IMG2IMG_KEY, "1");
+        } catch {
+          // ignore storage errors
+        }
+      } catch (e) {
+        console.error("chain seed fetch failed", e);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [suggestedSeed, attached.length, value.length, streaming]);
 
   useImperativeHandle(
     ref,

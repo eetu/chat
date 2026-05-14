@@ -946,7 +946,7 @@ const MessageActions = ({
         <ActionButton
           onClick={() => onRemix(firstImage.src)}
           label="remix as new prompt"
-          icon="auto_fix_high"
+          icon="auto_awesome"
           theme={theme}
         />
       )}

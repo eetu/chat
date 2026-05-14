@@ -1,10 +1,17 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useTheme } from "@emotion/react";
-import { createFileRoute, useParams } from "@tanstack/react-router";
+import { createFileRoute, useBlocker, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, Conversation, ModelCapabilities, Persona, Status } from "../api";
+import {
+  api,
+  Conversation,
+  imageUrl,
+  ModelCapabilities,
+  Persona,
+  Status,
+} from "../api";
 import Composer, { ComposerHandle } from "../components/Composer";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
@@ -55,6 +62,34 @@ const ChatView = () => {
       void cancelPending(pendingMsg.id);
     }
   };
+
+  // Guard against accidentally trashing in-flight work. On this home
+  // setup ComfyUI jobs can run for minutes and a sidebar click would
+  // both abort the SSE and drop the pending row. Warn before any
+  // in-app navigation while a stream / pending image is alive; the
+  // native beforeunload listener covers reload + tab-close.
+  const leaveMessage = pendingMsg
+    ? "image generation in progress — leave and cancel it?"
+    : "reply still streaming — leave and cancel it?";
+  useBlocker({
+    shouldBlockFn: () => {
+      if (!busy) return false;
+      // confirm() returns true on OK (proceed) → don't block.
+      return !window.confirm(leaveMessage);
+    },
+    enableBeforeUnload: false,
+  });
+  useEffect(() => {
+    if (!busy) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Modern browsers ignore the custom string and show their own
+      // generic prompt — assignment is kept for legacy engines.
+      e.returnValue = leaveMessage;
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [busy, leaveMessage]);
 
   const { data: conversations } = useSWR<Conversation[]>(
     "/api/conversations",
@@ -148,16 +183,29 @@ const ChatView = () => {
   /**
    * Edit a past user message and re-run from there. Truncates everything
    * after that row, then sends the new content with the original images
-   * carried forward. Mode is inferred from attachments — same heuristic
-   * the regenerate path uses.
+   * carried forward. Mode prefers the assistant reply that followed —
+   * a text-only prompt that produced an image (Ollama txt2img) carries
+   * no seed of its own, so the user row's image_count alone would drop
+   * image-mode and route the resend through /api/chat, which 400s on
+   * an image-only model.
    */
   const onEdit = (id: number, newContent: string) => {
     const idx = messages.findIndex((m) => m.id === id);
     if (idx === -1) return;
     const target = messages[idx];
     const imgCount = (target.image_count ?? 0) + (target.images?.length ?? 0);
-    const mode: "chat" | "image" | undefined =
-      imgCount > 0 ? "image" : undefined;
+    const next = messages[idx + 1];
+    let mode: "chat" | "image" | undefined;
+    if (imgCount > 0) {
+      mode = "image";
+    } else if (next?.role === "assistant") {
+      const nextImg = (next.image_count ?? 0) + (next.images?.length ?? 0);
+      mode = next.status === "error" || nextImg > 0 ? "image" : "chat";
+    } else if (caps?.image_gen && !caps?.chat) {
+      mode = "image";
+    } else if (caps?.chat && !caps?.image_gen) {
+      mode = "chat";
+    }
     stickRef.current = true;
     setShowJump(false);
     void editAndResend(id, newContent, model ?? undefined, mode);
@@ -214,6 +262,94 @@ const ChatView = () => {
     setShowJump(!stickRef.current && streaming);
   };
 
+  // Chain the previous result into the next img2img turn — but only
+  // when the user actually just generated one in this tab. Opening an
+  // older chat that happens to end in an image shouldn't silently
+  // pre-attach: the user came to read, not to remix. `chainArmed` flips
+  // true on the streaming true→false edge once we observe the tail
+  // settle to an image-gen done row, and stays sticky until the next
+  // stream starts or the user switches conversations.
+  const [chainArmed, setChainArmed] = useState(false);
+  const [armPending, setArmPending] = useState(false);
+  const [prevStreaming, setPrevStreaming] = useState(false);
+  // Detect streaming edges in render — the eslint rule discourages
+  // setState in effects, and React 19 explicitly supports the "compare
+  // last-seen prop with this render's value, fire transition" idiom
+  // already used elsewhere in this file for `lastGlueId` / `modelKey`.
+  if (prevStreaming !== streaming) {
+    setPrevStreaming(streaming);
+    if (streaming) {
+      // New turn starting — clear any prior arm so the next finished
+      // turn re-evaluates against its own tail.
+      setChainArmed(false);
+      setArmPending(false);
+    } else {
+      setArmPending(true);
+    }
+  }
+  // Once armed-pending, watch messages settle. The fetch that lands
+  // canonical image bytes runs after `streaming` flips false, so the
+  // tail may briefly look like a pending placeholder before stabilising
+  // — keep waiting until we see a non-pending tail. A non-image tail
+  // (plain chat completion) drops the arm without firing the chain.
+  if (armPending) {
+    let tail: (typeof messages)[number] | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].status !== "pending") {
+        tail = messages[i];
+        break;
+      }
+    }
+    if (tail) {
+      const isImageDone =
+        tail.role === "assistant" &&
+        tail.status === "done" &&
+        (tail.image_count ?? 0) + (tail.images?.length ?? 0) > 0;
+      if (isImageDone) {
+        setChainArmed(true);
+        setArmPending(false);
+      } else {
+        setArmPending(false);
+      }
+    }
+  }
+
+  // Surface the tail image as the seed only once chainArmed is true.
+  // The composer dedupes consumption per seed id; a fresh generation
+  // produces a new id and re-triggers attach.
+  const suggestedSeed = useMemo(() => {
+    if (!chainArmed || !status?.img2img_available || !id) return null;
+    let tail: (typeof messages)[number] | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].status !== "pending") {
+        tail = messages[i];
+        break;
+      }
+    }
+    if (!tail || tail.role !== "assistant" || tail.status !== "done") {
+      return null;
+    }
+    if (tail.images && tail.images.length > 0) {
+      return {
+        id: `opt-${tail.id ?? "x"}-${tail.images[0].slice(0, 16)}`,
+        dataUrl: tail.images[0].startsWith("data:")
+          ? tail.images[0]
+          : `data:image/png;base64,${tail.images[0]}`,
+      };
+    }
+    if (
+      typeof tail.id === "number" &&
+      tail.image_count &&
+      tail.image_count > 0
+    ) {
+      return {
+        id: `m-${tail.id}-0`,
+        url: imageUrl(id, tail.id, 0),
+      };
+    }
+    return null;
+  }, [chainArmed, messages, status?.img2img_available, id]);
+
   // newest-first list of past user prompts, fed to the composer for
   // ↑/↓ shell-style recall. Filter out the optimistic in-flight echo
   // (the most recent user message is already in-thread; that's fine —
@@ -235,6 +371,9 @@ const ChatView = () => {
     setLastGlueId(id);
     stickRef.current = true;
     setShowJump(false);
+    setChainArmed(false);
+    setArmPending(false);
+    setPrevStreaming(false);
   }
   useEffect(() => {
     scrollToBottom("auto");
@@ -474,6 +613,7 @@ const ChatView = () => {
           img2imgAvailable={status?.img2img_available ?? false}
           voiceInAvailable={status?.voice_in_available ?? false}
           personas={personas}
+          suggestedSeed={suggestedSeed}
         />
       </div>
     </>

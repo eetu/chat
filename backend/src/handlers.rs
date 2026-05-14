@@ -1153,17 +1153,33 @@ pub async fn chat(
                 }
                 Err(ollama::ChatStreamError::Cancelled) => {
                     // Client went away (stop button, tab close, navigation).
-                    // Drop the placeholder row entirely so a retry doesn't
-                    // pile up half-finished bubbles. The ComfyUI worker has
-                    // already been told to interrupt inside generate_kontext.
-                    if let Err(e) = state_clone.storage.delete_message_and_after(
+                    // First try the clean path — drop the placeholder row
+                    // so a retry doesn't pile up half-finished bubbles.
+                    // Falls back to marking the row errored when delete
+                    // can't see it (observed in prod with a misleading
+                    // "not found"): without the fallback the row stays
+                    // stuck pending forever and the UI keeps polling it,
+                    // re-triggering the leave-confirm on every nav.
+                    match state_clone.storage.delete_message_and_after(
                         &user_sub,
                         &conv_id,
                         pending_id,
                     ) {
-                        tracing::warn!(
-                            "failed to drop cancelled pending row {pending_id}: {e}"
-                        );
+                        Ok(()) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                "delete after cancel failed for msg {pending_id} \
+                                 (user={user_sub}, conv={conv_id}): {e}; \
+                                 falling back to fail_message"
+                            );
+                            if let Err(e2) =
+                                state_clone.storage.fail_message(pending_id, "cancelled")
+                            {
+                                tracing::error!(
+                                    "fail_message fallback failed for msg {pending_id}: {e2}"
+                                );
+                            }
+                        }
                     }
                 }
                 Err(e) => {
