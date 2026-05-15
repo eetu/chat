@@ -4,6 +4,11 @@ updates:
     directory: "/frontend"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 5
     ignore:
       - dependency-name: "eslint"
         update-types: ["version-update:semver-major"]
@@ -33,6 +38,11 @@ updates:
     directory: "/backend"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 5
     groups:
       minor-and-patch:
         update-types:
@@ -43,3 +53,8 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 5
