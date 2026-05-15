@@ -12,7 +12,10 @@
     "format:fix": "prettier --write src",
     "typecheck": "tsc --noEmit",
     "validate": "yarn typecheck && yarn lint && yarn format",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:e2e": "playwright test -c ./playwright.configuration.ts"
   },
   "dependencies": {
     "@emotion/react": "^11.14.0",
@@ -38,12 +41,16 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",
+    "@vitest/browser-playwright": "^4",
     "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^10.3.0",
     "eslint-config": "github:eetu/eslint-config#v2.0.1",
+    "playwright": "^1",
     "prettier": "^3.8.3",
     "typescript": "^6.0.3",
-    "vite": "^8.0.12"
+    "vite": "^8.0.12",
+    "vitest": "^4",
+    "vitest-browser-react": "^2"
   },
   "packageManager": "yarn@4.12.0"
 }

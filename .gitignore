@@ -11,6 +11,10 @@ frontend/dist/
 frontend/.yarn/cache/
 frontend/.yarn/install-state.gz
 frontend/.yarn/build-state.yml
+frontend/.vitest-attachments/
+frontend/test-results/
+frontend/playwright-report/
+frontend/**/__screenshots__/
 
 # OS / editor
 .DS_Store
