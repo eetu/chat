@@ -1,7 +1,96 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 
-import { api, imageUrl, Message, streamChat } from "../api";
+import { api, imageUrl, maskUrl, Message, streamChat } from "../api";
+
+/**
+ * Fetch a persisted message's base images as base64 (no `data:`
+ * prefix). Used by the resend paths (edit, regenerate, regenerate-
+ * from-user) — message list payloads only carry `image_count`, so
+ * the bytes have to come through the per-image endpoint. Returns
+ * `undefined` when the row has no images so the caller can pass the
+ * result straight through to `send`.
+ */
+const fetchPersistedImages = async (
+  convId: string,
+  msgId: number,
+  count: number,
+): Promise<string[] | undefined> => {
+  if (!count) return undefined;
+  return Promise.all(
+    Array.from({ length: count }, async (_, i) => {
+      const blob = await (
+        await fetch(imageUrl(convId, msgId, i), { credentials: "include" })
+      ).blob();
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result));
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
+      const comma = dataUrl.indexOf(",");
+      return comma >= 0 ? dataUrl.slice(comma + 1) : "";
+    }),
+  );
+};
+
+/**
+ * Fetch a persisted message's inpaint mask if it carries one.
+ * Returns `undefined` on 404 or any failure — the caller treats that
+ * as "no mask" and falls back to plain img2img/txt2img routing.
+ */
+const fetchPersistedMask = async (
+  convId: string,
+  msgId: number,
+): Promise<string | undefined> => {
+  try {
+    const res = await fetch(maskUrl(convId, msgId), {
+      credentials: "include",
+    });
+    if (!res.ok) return undefined;
+    const blob = await res.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result));
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(blob);
+    });
+    const comma = dataUrl.indexOf(",");
+    return comma >= 0 ? dataUrl.slice(comma + 1) : undefined;
+  } catch (e) {
+    console.warn("mask fetch failed", e);
+    return undefined;
+  }
+};
+
+/**
+ * Send arguments collapsed into an options bag so the route + every
+ * internal resend path (edit, regenerate, regenerate-from-user) share
+ * one shape. Earlier iterations took 10+ positional args which was a
+ * recipe for off-by-one bugs when a new field landed.
+ */
+export type SendOptions = {
+  content: string;
+  model?: string;
+  images?: string[];
+  mode?: "chat" | "image";
+  refine?: boolean;
+  persona?: string;
+  /** When set, drops the failed assistant row and re-runs generation
+   * off the existing user message — no new user bubble appears. */
+  retryAssistantId?: number;
+  /** When set, trims everything after this user row and re-runs
+   * generation off it. */
+  regenerateFromUser?: number;
+  /** Image-mode sub-routing. "inpaint" requires a mask + exactly one
+   * image. */
+  subMode?: "txt2img" | "img2img" | "inpaint";
+  /** Base64 PNG mask. Only carried into the request when sub_mode is
+   * inpaint. */
+  mask?: string;
+  /** Optional negative-prompt override. */
+  negative?: string;
+};
 
 type LiveMessage = Pick<Message, "role" | "content"> & {
   id?: number;
@@ -77,22 +166,21 @@ export function useChat(convId: string | undefined) {
   }, [convId]);
 
   const send = useCallback(
-    async (
-      content: string,
-      model?: string,
-      images?: string[],
-      mode?: "chat" | "image",
-      refine?: boolean,
-      persona?: string,
-      /** When set, drops the failed assistant row and re-runs generation
-       * off the existing user message — no new user bubble appears. */
-      retryAssistantId?: number,
-      /** When set, trims everything after this user row and re-runs
-       * generation off it. Used by the regenerate button under user
-       * bubbles. No new user bubble appears. */
-      regenerateFromUser?: number,
-    ) => {
+    async (opts: SendOptions) => {
       if (!convId || streaming) return;
+      const {
+        content,
+        model,
+        images,
+        mode,
+        refine,
+        persona,
+        retryAssistantId,
+        regenerateFromUser,
+        subMode,
+        mask,
+        negative,
+      } = opts;
       const controller = new AbortController();
       abortRef.current = controller;
       let aborted = false;
@@ -149,6 +237,9 @@ export function useChat(convId: string | undefined) {
             persona,
             retry_assistant_id: retryAssistantId,
             regenerate_from_user: regenerateFromUser,
+            sub_mode: subMode,
+            mask,
+            negative,
           },
           controller.signal,
         )) {
@@ -364,28 +455,20 @@ export function useChat(convId: string | undefined) {
         images = target.images;
       } else if (target.image_count && target.image_count > 0) {
         try {
-          images = await Promise.all(
-            Array.from({ length: target.image_count }, async (_, i) => {
-              const blob = await (
-                await fetch(imageUrl(convId, messageId, i), {
-                  credentials: "include",
-                })
-              ).blob();
-              const dataUrl = await new Promise<string>((resolve, reject) => {
-                const r = new FileReader();
-                r.onload = () => resolve(String(r.result));
-                r.onerror = () => reject(r.error);
-                r.readAsDataURL(blob);
-              });
-              const comma = dataUrl.indexOf(",");
-              return comma >= 0 ? dataUrl.slice(comma + 1) : "";
-            }),
+          images = await fetchPersistedImages(
+            convId,
+            messageId,
+            target.image_count,
           );
         } catch (e) {
           setError(String(e));
           return;
         }
       }
+
+      // Pull the mask if the original turn carried one — backend
+      // routing keys on its presence. 404 = no mask, soft fallback.
+      const mask = await fetchPersistedMask(convId, messageId);
 
       try {
         await api.deleteMessageFrom(convId, messageId);
@@ -396,7 +479,16 @@ export function useChat(convId: string | undefined) {
       // Trim the local thread to match the truncate. `send` re-appends an
       // optimistic user bubble right after, so the UI never flashes empty.
       setMessages((prev) => prev.slice(0, idx));
-      await send(newContent, model, images, mode, refine, persona);
+      await send({
+        content: newContent,
+        model,
+        images,
+        mode,
+        refine,
+        persona,
+        subMode: mask ? "inpaint" : undefined,
+        mask,
+      });
     },
     [convId, streaming, messages, send],
   );
@@ -427,16 +519,33 @@ export function useChat(convId: string | undefined) {
             next.status === "error" || nextImg > 0 ? "image" : "chat";
         }
       }
-      await send(
-        target.content,
+      // Persisted user rows only carry an `image_count` — bytes live
+      // behind /api/.../image/:idx. Hand them back to the backend
+      // explicitly so the inpaint sub-mode router can match
+      // `images.len() == 1 && mask.is_some()`.
+      let images = target.images;
+      if (!images && target.image_count) {
+        try {
+          images = await fetchPersistedImages(
+            convId,
+            userMessageId,
+            target.image_count,
+          );
+        } catch (e) {
+          setError(String(e));
+          return;
+        }
+      }
+      const mask = await fetchPersistedMask(convId, userMessageId);
+      await send({
+        content: target.content,
         model,
-        target.images,
-        inferredMode,
-        undefined,
-        undefined,
-        undefined,
-        userMessageId,
-      );
+        images,
+        mode: inferredMode,
+        regenerateFromUser: userMessageId,
+        subMode: mask ? "inpaint" : undefined,
+        mask,
+      });
     },
     [convId, streaming, messages, send],
   );
@@ -465,16 +574,35 @@ export function useChat(convId: string | undefined) {
         target.status === "error" || targetImageCount > 0 ? "image" : "chat";
       // Backend deletes the failed assistant row inside the same /api/chat
       // request; no client-side delete + re-fetch round trip needed, and
-      // no second user bubble appears.
-      await send(
-        prior.content,
-        undefined,
-        prior.images,
-        inferredMode,
-        undefined,
-        undefined,
-        assistantId,
-      );
+      // no second user bubble appears. Re-fetch the prior user row's
+      // base images + mask so an inpaint retry doesn't bounce with
+      // "inpaint requires exactly one base image" — DTO state only
+      // carries image_count + has_mask, never the bytes themselves.
+      let images = prior.images;
+      let mask: string | undefined;
+      if (typeof prior.id === "number") {
+        if (!images && prior.image_count) {
+          try {
+            images = await fetchPersistedImages(
+              convId,
+              prior.id,
+              prior.image_count,
+            );
+          } catch (e) {
+            setError(String(e));
+            return;
+          }
+        }
+        mask = await fetchPersistedMask(convId, prior.id);
+      }
+      await send({
+        content: prior.content,
+        images,
+        mode: inferredMode,
+        retryAssistantId: assistantId,
+        subMode: mask ? "inpaint" : undefined,
+        mask,
+      });
     },
     [convId, messages, send, streaming],
   );

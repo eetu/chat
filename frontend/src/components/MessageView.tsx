@@ -2,7 +2,7 @@ import { Theme, useTheme } from "@emotion/react";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, imageUrl, Message } from "../api";
+import { api, imageUrl, maskUrl, Message } from "../api";
 import {
   markdownToSpeech,
   normalizeVoices,
@@ -18,6 +18,9 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   images?: string[];
   /** Number of persisted attachments — load via `imageUrl(...)`. */
   image_count?: number;
+  /** True when this row has an inpaint mask attached — drives the
+   * red mask-overlay on user inpaint turns. */
+  has_mask?: boolean;
   status?: "done" | "pending" | "error";
   /** Live sampler progress, fed from the SSE stream while a ComfyUI
    * img2img job is churning. */
@@ -51,6 +54,11 @@ type Props = {
    * image and flips it into img2img mode. Wired only on assistant rows
    * with at least one rendered image. */
   onRemix?: (src: string) => void;
+  /** Open a MaskEditor against an existing generated image so the user
+   * can repaint a region of it. The handler is expected to pair the
+   * base image + drawn mask back into the composer with inpaint mode.
+   * Wired only on assistant rows with at least one rendered image. */
+  onInpaint?: (src: string) => void;
   /** Edit + resend a past user message — truncates the thread from this
    * row and re-runs generation with the new content. Wired only on
    * user rows. */
@@ -102,10 +110,15 @@ const ChatImage = ({
   image,
   variant,
   onClick,
+  maskSrc,
 }: {
   image: ImageRef;
   variant: "user" | "assistant";
   onClick?: () => void;
+  /** When present, overlays a translucent red layer clipped to the
+   * mask's white pixels — so user inpaint turns visually surface the
+   * region that was repainted, without an extra trip into the editor. */
+  maskSrc?: string;
 }) => {
   const theme = useTheme();
   const [loaded, setLoaded] = useState(false);
@@ -177,6 +190,32 @@ const ChatImage = ({
           transition: "opacity 180ms ease",
         }}
       />
+      {maskSrc && (
+        // The mask PNG is opaque white-on-opaque-black (alpha=255
+        // everywhere). The CSS default `mask-mode: match-source`
+        // would read that alpha and paint red over the whole image,
+        // since both the white and black regions are alpha-opaque.
+        // Switch to luminance so brightness drives the clip — white
+        // shows the red, black hides it. `-webkit-mask-source-type`
+        // covers Safari before the unprefixed property landed.
+        <div
+          aria-hidden
+          css={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(255, 56, 56, 0.45)",
+            WebkitMaskImage: `url(${maskSrc})`,
+            maskImage: `url(${maskSrc})`,
+            WebkitMaskSize: "100% 100%",
+            maskSize: "100% 100%",
+            WebkitMaskRepeat: "no-repeat",
+            maskRepeat: "no-repeat",
+            maskMode: "luminance",
+            WebkitMaskSourceType: "luminance",
+            pointerEvents: "none",
+          }}
+        />
+      )}
     </div>
   );
 };
@@ -273,6 +312,7 @@ const MessageView = ({
   onRegenerate,
   onRegenerateFromUser,
   onRemix,
+  onInpaint,
   onEdit,
   ttsAvailable,
   priorUserContent,
@@ -325,12 +365,25 @@ const MessageView = ({
               maxWidth: "78%",
             }}
           >
-            {refs.map((ref) => (
+            {refs.map((ref, idx) => (
               <ChatImage
                 key={ref.src}
                 image={ref}
                 variant="user"
                 onClick={() => setLightboxSrc(ref.src)}
+                // The inpaint mask lives on the user row alongside its
+                // single base image — only paint the overlay on the
+                // first ref (index 0), since Flux Fill rejects multi-
+                // image inpaint anyway and storage stores one mask per
+                // row regardless.
+                maskSrc={
+                  idx === 0 &&
+                  msg.has_mask &&
+                  convId &&
+                  typeof msg.id === "number"
+                    ? maskUrl(convId, msg.id)
+                    : undefined
+                }
               />
             ))}
           </div>
@@ -479,6 +532,7 @@ const MessageView = ({
           onDeleteFrom={onDeleteFrom}
           onRegenerate={onRegenerate}
           onRemix={onRemix}
+          onInpaint={onInpaint}
           ttsAvailable={ttsAvailable}
           priorUserContent={priorUserContent}
           busy={busy}
@@ -652,6 +706,7 @@ const MessageActions = ({
   onRegenerate,
   onRegenerateFromUser,
   onRemix,
+  onInpaint,
   onEdit,
   ttsAvailable,
   priorUserContent,
@@ -663,6 +718,7 @@ const MessageActions = ({
   onRegenerate?: (id: number) => void;
   onRegenerateFromUser?: (id: number) => void;
   onRemix?: (src: string) => void;
+  onInpaint?: (src: string) => void;
   onEdit?: () => void;
   ttsAvailable?: boolean;
   priorUserContent?: string;
@@ -947,6 +1003,14 @@ const MessageActions = ({
           onClick={() => onRemix(firstImage.src)}
           label="remix as new prompt"
           icon="auto_awesome"
+          theme={theme}
+        />
+      )}
+      {firstImage && onInpaint && (
+        <ActionButton
+          onClick={() => onInpaint(firstImage.src)}
+          label="inpaint a region"
+          icon="brush"
           theme={theme}
         />
       )}

@@ -14,11 +14,17 @@ export type Message = {
   /** Count of image attachments. Bytes are fetched on demand via
    * `imageUrl(convId, id, idx)` rather than inlined in the list payload. */
   image_count?: number;
+  /** True when this row carries an inpaint mask, fetchable via
+   * `maskUrl(convId, id)`. Drives the mask-overlay in MessageView. */
+  has_mask?: boolean;
   status?: "done" | "pending" | "error";
 };
 
 export const imageUrl = (convId: string, msgId: number, idx: number) =>
   `/api/conversations/${convId}/messages/${msgId}/image/${idx}`;
+
+export const maskUrl = (convId: string, msgId: number) =>
+  `/api/conversations/${convId}/messages/${msgId}/mask`;
 
 export type ModelCapabilities = {
   vision: boolean;
@@ -214,6 +220,18 @@ export async function* streamChat(
      * turn and regenerates the assistant reply off it. Used by the
      * regenerate button under user bubbles. */
     regenerate_from_user?: number;
+    /** Image-mode sub-routing. "inpaint" requires `mask` + exactly one
+     * image; "img2img" forces the Kontext branch; "txt2img" forces the
+     * Ollama branch. Omit to let the backend infer from `images` /
+     * `mask` (preserves the legacy behaviour). */
+    sub_mode?: "txt2img" | "img2img" | "inpaint";
+    /** Base64 PNG mask aligned to `images[0]`. White pixels (red
+     * channel) mark the area to repaint. Only meaningful with
+     * `sub_mode: "inpaint"`. */
+    mask?: string;
+    /** Negative-prompt override for image mode. Effective on workflows
+     * that run real CFG (Flux Fill inpaint today). */
+    negative?: string;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {

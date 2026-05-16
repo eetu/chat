@@ -13,6 +13,7 @@ import {
   Status,
 } from "../api";
 import Composer, { ComposerHandle } from "../components/Composer";
+import MaskEditor from "../components/MaskEditor";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
 import { mq } from "../mq";
@@ -172,12 +173,25 @@ const ChatView = () => {
     mode?: "chat" | "image",
     refine?: boolean,
     persona?: string,
+    subMode?: "txt2img" | "img2img" | "inpaint",
+    mask?: string,
+    negative?: string,
   ) => {
     // The user just hit send — they expect to see their message and the
     // incoming reply. Re-glue to the bottom regardless of where they were.
     stickRef.current = true;
     setShowJump(false);
-    void send(content, model ?? undefined, images, mode, refine, persona);
+    void send({
+      content,
+      model: model ?? undefined,
+      images,
+      mode,
+      refine,
+      persona,
+      subMode,
+      mask,
+      negative,
+    });
   };
 
   /**
@@ -241,6 +255,45 @@ const ChatView = () => {
       composerRef.current?.remixWithImage({ base64, preview });
     } catch (e) {
       console.error("remix failed", e);
+    }
+  };
+
+  /**
+   * "Inpaint this" affordance on assistant image bubbles. Loads the
+   * generated image, opens a route-level MaskEditor with it, and on
+   * commit hands the (image, mask) pair to the composer in one shot
+   * so the user's next prompt routes straight to the Flux Fill
+   * workflow without losing the just-drawn mask.
+   */
+  const [inpaintSource, setInpaintSource] = useState<{
+    base64: string;
+    preview: string;
+  } | null>(null);
+  const onInpaintFromAssistant = async (src: string) => {
+    try {
+      let base64: string;
+      let preview: string;
+      if (src.startsWith("data:")) {
+        preview = src;
+        const comma = src.indexOf(",");
+        base64 = comma >= 0 ? src.slice(comma + 1) : "";
+      } else {
+        const blob = await (
+          await fetch(src, { credentials: "include" })
+        ).blob();
+        preview = await new Promise<string>((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result));
+          r.onerror = () => reject(r.error);
+          r.readAsDataURL(blob);
+        });
+        const comma = preview.indexOf(",");
+        base64 = comma >= 0 ? preview.slice(comma + 1) : "";
+      }
+      if (!base64) return;
+      setInpaintSource({ base64, preview });
+    } catch (e) {
+      console.error("inpaint open failed", e);
     }
   };
 
@@ -432,6 +485,9 @@ const ChatView = () => {
       mode?: "chat" | "image";
       refine?: boolean;
       persona?: string;
+      subMode?: "txt2img" | "img2img" | "inpaint";
+      mask?: string;
+      negative?: string;
     };
     const parsed = ((): Pending | null => {
       try {
@@ -449,14 +505,17 @@ const ChatView = () => {
     // into the picker via the modelKey block above. Setting it here too
     // would duplicate the update and trip eslint's set-state-in-effect rule.
     stickRef.current = true;
-    void send(
-      parsed.content,
-      parsed.model ?? undefined,
-      parsed.images,
-      parsed.mode,
-      parsed.refine,
-      parsed.persona,
-    );
+    void send({
+      content: parsed.content,
+      model: parsed.model ?? undefined,
+      images: parsed.images,
+      mode: parsed.mode,
+      refine: parsed.refine,
+      persona: parsed.persona,
+      subMode: parsed.subMode,
+      mask: parsed.mask,
+      negative: parsed.negative,
+    });
   }, [id, loaded, send]);
 
   // On message updates: only follow if the user is already pinned to the
@@ -538,6 +597,9 @@ const ChatView = () => {
                   );
                 }}
                 onRemix={status?.img2img_available ? onRemix : undefined}
+                onInpaint={
+                  status?.img2img_available ? onInpaintFromAssistant : undefined
+                }
                 onEdit={onEdit}
                 ttsAvailable={status?.voice_out_available ?? false}
                 priorUserContent={priorUserContent}
@@ -616,6 +678,16 @@ const ChatView = () => {
           suggestedSeed={suggestedSeed}
         />
       </div>
+      {inpaintSource && (
+        <MaskEditor
+          imageSrc={inpaintSource.preview}
+          onCancel={() => setInpaintSource(null)}
+          onDone={(m) => {
+            composerRef.current?.pushInpaintWithMask(inpaintSource, m);
+            setInpaintSource(null);
+          }}
+        />
+      )}
     </>
   );
 };

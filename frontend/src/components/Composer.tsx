@@ -12,6 +12,7 @@ import {
 import { resizeImageForUpload } from "../image";
 import { mq } from "../mq";
 import { resolveSttLang } from "../tts";
+import MaskEditor, { MaskResult } from "./MaskEditor";
 import ModelPicker from "./ModelPicker";
 
 /**
@@ -22,9 +23,31 @@ import ModelPicker from "./ModelPicker";
  */
 export type ComposerHandle = {
   remixWithImage: (image: { base64: string; preview: string }) => void;
+  /** Push a base image + already-drawn inpaint mask into the composer
+   * in one shot. Used by the assistant-bubble "inpaint this" action
+   * that routes through its own MaskEditor before handing the result
+   * back here. Sets attachmentMode to "inpaint" and bypasses the
+   * attached-change auto-clear so the freshly-paired mask survives
+   * the next render. */
+  pushInpaintWithMask: (
+    image: { base64: string; preview: string },
+    mask: MaskResult,
+  ) => void;
 };
 
 type Mode = "chat" | "image";
+
+/**
+ * How an attached image is routed when image mode is active. "off" means
+ * a vision-capable chat model just analyses the image. "edit" hands it to
+ * the ComfyUI Kontext img2img workflow. "inpaint" routes to Flux Fill
+ * with a user-drawn mask. Only the inpaint branch needs a mask payload —
+ * "edit" alone is enough for Kontext, and "off" never reaches the image
+ * pipeline at all.
+ */
+type AttachmentMode = "off" | "edit" | "inpaint";
+
+type SubMode = "txt2img" | "img2img" | "inpaint";
 
 type Persona = {
   id: string;
@@ -39,6 +62,9 @@ type Props = {
     mode?: Mode,
     refine?: boolean,
     persona?: string,
+    subMode?: SubMode,
+    mask?: string,
+    negative?: string,
   ) => void;
   /** When true, the send button switches to a stop button. */
   streaming?: boolean;
@@ -92,7 +118,40 @@ type Props = {
  */
 const REFINE_KEY = "chat:refineImagePrompt";
 const PERSONA_KEY = "chat:imagePersona";
-const IMG2IMG_KEY = "chat:img2img";
+const ATTACHMENT_MODE_KEY = "chat:attachmentMode";
+// Legacy key kept around for the one-shot migration: "1" → edit, "0" → off.
+const LEGACY_IMG2IMG_KEY = "chat:img2img";
+
+/// One-shot read of the attachment-mode preference, with a migration
+/// path from the old boolean `chat:img2img` flag. Older clients only
+/// knew two modes (off / edit-via-Kontext); they're upgraded straight
+/// to the new tri-state so the user's earlier toggle stays honoured.
+const readAttachmentMode = (): AttachmentMode => {
+  try {
+    const stored = window.localStorage.getItem(ATTACHMENT_MODE_KEY);
+    if (stored === "edit" || stored === "inpaint" || stored === "off") {
+      return stored;
+    }
+    const legacy = window.localStorage.getItem(LEGACY_IMG2IMG_KEY);
+    if (legacy === "1") return "edit";
+    if (legacy === "0") return "off";
+  } catch {
+    // ignore — fall through to default.
+  }
+  return "off";
+};
+
+const writeAttachmentMode = (mode: AttachmentMode) => {
+  try {
+    window.localStorage.setItem(ATTACHMENT_MODE_KEY, mode);
+    // Mirror to the legacy boolean so any code still reading it during
+    // a transition window (e.g. SSR-hydrated sibling pages) gets the
+    // right answer.
+    window.localStorage.setItem(LEGACY_IMG2IMG_KEY, mode === "off" ? "0" : "1");
+  } catch {
+    // ignore storage errors (private mode, quota)
+  }
+};
 
 /**
  * Decode an arbitrary MediaRecorder blob into 16 kHz mono 16-bit PCM
@@ -201,40 +260,58 @@ const Composer = ({
     setMode(imageGen && !chatCap ? "image" : "chat");
   }
   const showModeToggle = chatCap && imageGen;
-  // img2img toggle is independent of the picker model — when on, an
-  // attached image gets edited by the dedicated img2img backend
-  // (ComfyUI Kontext) regardless of whether the chat model has
-  // image_gen caps. Only surfaced when the server is wired for it.
-  const [img2img, setImg2img] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(IMG2IMG_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
-  // The img2img toggle is only meaningful when an image is actually
-  // attached — without one the composer should behave like a plain chat
-  // surface (model picker enabled, no refine/persona surface, etc.).
-  // Keeping the toggle hidden until an attachment lands matches user
-  // intent ("I want to edit this image") and avoids the trap where a
-  // leftover localStorage flag locks an empty composer into image-mode.
-  const showImg2imgToggle = img2imgAvailable && attached.length > 0;
-  const toggleImg2img = () => {
-    setImg2img((prev) => {
-      const next = !prev;
-      try {
-        window.localStorage.setItem(IMG2IMG_KEY, next ? "1" : "0");
-      } catch {
-        // ignore
-      }
-      return next;
-    });
+  // Attachment-routing tri-state: "off" lets a vision chat model see
+  // the image; "edit" hands it to ComfyUI Kontext (img2img); "inpaint"
+  // pairs it with a user-drawn mask for the Flux Fill workflow. The
+  // wrapper writes through to localStorage so the choice survives a
+  // reload; raw useState setter is renamed off to silence the
+  // "setter must be set<State>" lint and avoid accidentally bypassing
+  // the persistence helper.
+  // eslint-disable-next-line @eslint-react/use-state
+  const [attachmentMode, persistAttachmentMode] =
+    useState<AttachmentMode>(readAttachmentMode);
+  const setAttachmentMode = (next: AttachmentMode) => {
+    persistAttachmentMode(next);
+    writeAttachmentMode(next);
   };
-  // Effective send-time mode: img2img promotes to "image" only when an
-  // image is actually attached. A stale toggle without an attachment
-  // falls back to whatever the chat/image mode toggle says — almost
-  // always plain chat.
-  const effectiveMode: Mode = img2img && attached.length > 0 ? "image" : mode;
+  // Inpaint is single-image only (Flux Fill expects exactly one base).
+  // When the user piles on extra attachments, downshift to edit during
+  // render so the composer doesn't sit in an unsubmittable state.
+  // Render-phase setState mirrors the pattern already used for
+  // `lastCapsKey` / `lastModelKey` in this file.
+  if (attachmentMode === "inpaint" && attached.length > 1) {
+    setAttachmentMode("edit");
+  }
+  const showAttachmentModeToggle = img2imgAvailable && attached.length > 0;
+  // Mask drawn by the user via MaskEditor. Cleared whenever the
+  // attachment list changes (re-pick → re-mask), the toggle leaves
+  // inpaint, or after a successful submit.
+  const [mask, setMask] = useState<MaskResult | null>(null);
+  const [maskEditorOpen, setMaskEditorOpen] = useState(false);
+  // Flag flipped by `pushInpaintWithMask` so the upcoming
+  // attached-change render doesn't auto-clear the freshly-paired mask.
+  // Refs avoid kicking off a re-render of their own.
+  const preserveMaskOnNextAttachedChangeRef = useRef(false);
+  const attachedKey = attached.map((a) => a.preview).join("|");
+  const [lastAttachedKey, setLastAttachedKey] = useState(attachedKey);
+  if (lastAttachedKey !== attachedKey) {
+    setLastAttachedKey(attachedKey);
+    if (preserveMaskOnNextAttachedChangeRef.current) {
+      preserveMaskOnNextAttachedChangeRef.current = false;
+    } else {
+      setMask(null);
+    }
+  }
+  const [lastAttachmentMode, setLastAttachmentMode] = useState(attachmentMode);
+  if (lastAttachmentMode !== attachmentMode) {
+    setLastAttachmentMode(attachmentMode);
+    if (attachmentMode !== "inpaint") setMask(null);
+  }
+  // Effective send-time mode: any non-"off" attachment mode with at
+  // least one image promotes to image-gen. A stale toggle without an
+  // attachment falls back to whatever the chat/image mode toggle says.
+  const effectiveMode: Mode =
+    attachmentMode !== "off" && attached.length > 0 ? "image" : mode;
   const [refine, setRefine] = useState<boolean>(() => {
     try {
       const v = window.localStorage.getItem(REFINE_KEY);
@@ -262,6 +339,14 @@ const Composer = ({
       return "default";
     }
   });
+  // Negative-prompt override. Only effective when the workflow runs
+  // real CFG (Flux Fill inpaint today); for Kontext at cfg=1 the
+  // backend ignores it. Surfaced behind a "show negative" toggle so
+  // it doesn't crowd the basic image-prompt flow.
+  const [negative, setNegative] = useState("");
+  const [negativeOpen, setNegativeOpen] = useState(false);
+  const showNegativeToggle =
+    effectiveMode === "image" && attachmentMode === "inpaint";
   const showPersonaPicker =
     effectiveMode === "image" &&
     refinerAvailable &&
@@ -582,17 +667,42 @@ const Composer = ({
   const submit = () => {
     const trimmed = value.trim();
     if ((!trimmed && attached.length === 0) || streaming) return;
+    // Inpaint without a mask is a guaranteed 400 on the backend. Block
+    // at the boundary so the user gets the hint instead of a silent
+    // request failure.
+    if (effectiveMode === "image" && attachmentMode === "inpaint" && !mask) {
+      return;
+    }
     const imgs =
       attached.length > 0 ? attached.map((a) => a.base64) : undefined;
+    let subMode: SubMode | undefined;
+    if (effectiveMode === "image") {
+      if (attachmentMode === "inpaint") subMode = "inpaint";
+      else if (attachmentMode === "edit") subMode = "img2img";
+      else if (!imgs) subMode = "txt2img";
+    }
+    const maskPayload =
+      effectiveMode === "image" && attachmentMode === "inpaint" && mask
+        ? mask.base64
+        : undefined;
+    const negativeTrim = negative.trim();
+    const negativePayload =
+      effectiveMode === "image" && negativeTrim.length > 0
+        ? negativeTrim
+        : undefined;
     onSend(
       trimmed,
       imgs,
       effectiveMode,
       effectiveMode === "image" ? refine : undefined,
       effectiveMode === "image" && refine ? persona : undefined,
+      subMode,
+      maskPayload,
+      negativePayload,
     );
     setValue("");
     setAttached([]);
+    setMask(null);
     if (recallIndex !== -1) setRecallIndex(-1);
     draftRef.current = "";
   };
@@ -744,12 +854,11 @@ const Composer = ({
         if (cancelled || !base64) return;
         consumedSeedRef.current = seed.id;
         setAttached([{ base64, preview }]);
-        setImg2img(true);
-        try {
-          window.localStorage.setItem(IMG2IMG_KEY, "1");
-        } catch {
-          // ignore storage errors
-        }
+        // Chain defaults to plain img2img (edit). Inpaint requires
+        // the user to actively draw a mask, so we never force them
+        // into inpaint mode automatically — they'd just hit send with
+        // no mask and get a 400.
+        setAttachmentMode("edit");
       } catch (e) {
         console.error("chain seed fetch failed", e);
       }
@@ -757,6 +866,7 @@ const Composer = ({
     return () => {
       cancelled = true;
     };
+    // setAttachmentMode is stable; intentionally not in deps.
   }, [suggestedSeed, attached.length, value.length, streaming]);
 
   useImperativeHandle(
@@ -764,12 +874,8 @@ const Composer = ({
     () => ({
       remixWithImage: (image) => {
         setAttached([image]);
-        setImg2img(true);
-        try {
-          window.localStorage.setItem(IMG2IMG_KEY, "1");
-        } catch {
-          // ignore
-        }
+        setAttachmentMode("edit");
+        setMask(null);
         setValue("");
         setRecallIndex(-1);
         draftRef.current = "";
@@ -777,11 +883,24 @@ const Composer = ({
         // textarea doesn't fight with React's layout pass.
         requestAnimationFrame(() => textareaRef.current?.focus());
       },
+      pushInpaintWithMask: (image, m) => {
+        preserveMaskOnNextAttachedChangeRef.current = true;
+        setAttached([image]);
+        setAttachmentMode("inpaint");
+        setMask(m);
+        setValue("");
+        setRecallIndex(-1);
+        draftRef.current = "";
+        requestAnimationFrame(() => textareaRef.current?.focus());
+      },
     }),
     [],
   );
 
-  const canSend = (!!value.trim() || attached.length > 0) && !streaming;
+  const inpaintReady =
+    !(effectiveMode === "image" && attachmentMode === "inpaint") || !!mask;
+  const canSend =
+    (!!value.trim() || attached.length > 0) && !streaming && inpaintReady;
 
   return (
     <div css={{}}>
@@ -839,34 +958,40 @@ const Composer = ({
             drop image to attach
           </div>
         )}
-        {attached.length > 0 && img2img && img2imgAvailable && (
-          <div
-            css={{
-              display: "inline-flex",
-              alignSelf: "flex-start",
-              alignItems: "center",
-              gap: 6,
-              padding: "3px 8px",
-              margin: "4px 4px 0",
-              borderRadius: 999,
-              border: `1px solid ${theme.colors.border}`,
-              background: theme.colors.activity.onSoft,
-              color: theme.colors.text.main,
-              ...theme.typography.caption,
-            }}
-          >
-            <span
-              className="material-icons-outlined"
+        {attached.length > 0 &&
+          attachmentMode !== "off" &&
+          img2imgAvailable && (
+            <div
               css={{
-                fontSize: 14,
-                color: theme.colors.activity.on,
+                display: "inline-flex",
+                alignSelf: "flex-start",
+                alignItems: "center",
+                gap: 6,
+                padding: "3px 8px",
+                margin: "4px 4px 0",
+                borderRadius: 999,
+                border: `1px solid ${theme.colors.border}`,
+                background: theme.colors.activity.onSoft,
+                color: theme.colors.text.main,
+                ...theme.typography.caption,
               }}
             >
-              auto_awesome
-            </span>
-            img2img · flux kontext
-          </div>
-        )}
+              <span
+                className="material-icons-outlined"
+                css={{
+                  fontSize: 14,
+                  color: theme.colors.activity.on,
+                }}
+              >
+                {attachmentMode === "inpaint" ? "brush" : "auto_awesome"}
+              </span>
+              {attachmentMode === "inpaint"
+                ? mask
+                  ? "inpaint · flux fill · mask ready"
+                  : "inpaint · draw a mask to enable send"
+                : "img2img · flux kontext"}
+            </div>
+          )}
         {attached.length > 0 && (
           <div
             css={{
@@ -876,54 +1001,108 @@ const Composer = ({
               padding: "4px 4px 0",
             }}
           >
-            {attached.map((a, i) => (
-              <div
-                key={a.preview}
-                css={{
-                  position: "relative",
-                  width: 56,
-                  height: 56,
-                  borderRadius: 8,
-                  overflow: "hidden",
-                  border: `1px solid ${theme.colors.border}`,
-                  background: theme.colors.background.main,
-                }}
-              >
-                <img
-                  src={a.preview}
-                  alt=""
-                  css={{ width: "100%", height: "100%", objectFit: "cover" }}
-                />
-                <button
-                  type="button"
-                  aria-label="remove attachment"
-                  onClick={() => removeAttachment(i)}
+            {attached.map((a, i) => {
+              // Swap the thumbnail to the masked composite when the
+              // user has painted one; otherwise the chip would show
+              // the unaltered base and the user couldn't tell whether
+              // a mask was attached without re-opening the editor.
+              const previewSrc =
+                i === 0 && mask && attachmentMode === "inpaint"
+                  ? mask.preview
+                  : a.preview;
+              return (
+                <div
+                  key={a.preview}
                   css={{
-                    position: "absolute",
-                    top: 2,
-                    right: 2,
-                    width: 18,
-                    height: 18,
-                    borderRadius: "50%",
-                    border: "none",
-                    background: "rgba(0,0,0,0.55)",
-                    color: "#fff",
-                    cursor: "pointer",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 0,
+                    position: "relative",
+                    width: 56,
+                    height: 56,
+                    borderRadius: 8,
+                    overflow: "hidden",
+                    border: `1px solid ${theme.colors.border}`,
+                    background: theme.colors.background.main,
                   }}
                 >
-                  <span
-                    className="material-icons-outlined"
-                    css={{ fontSize: 12 }}
+                  <img
+                    src={previewSrc}
+                    alt=""
+                    css={{ width: "100%", height: "100%", objectFit: "cover" }}
+                  />
+                  <button
+                    type="button"
+                    aria-label="remove attachment"
+                    onClick={() => removeAttachment(i)}
+                    css={{
+                      position: "absolute",
+                      top: 2,
+                      right: 2,
+                      width: 18,
+                      height: 18,
+                      borderRadius: "50%",
+                      border: "none",
+                      background: "rgba(0,0,0,0.55)",
+                      color: "#fff",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: 0,
+                    }}
                   >
-                    close
-                  </span>
-                </button>
-              </div>
-            ))}
+                    <span
+                      className="material-icons-outlined"
+                      css={{ fontSize: 12 }}
+                    >
+                      close
+                    </span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {showNegativeToggle && negativeOpen && (
+          <div
+            css={{
+              padding: "4px 4px 0",
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+            }}
+          >
+            <label
+              htmlFor="composer-negative"
+              css={{
+                ...theme.typography.caption,
+                color: theme.colors.text.muted,
+                fontFamily: theme.fonts.heading,
+              }}
+            >
+              negative — things to avoid (comma-separated)
+            </label>
+            <textarea
+              id="composer-negative"
+              value={negative}
+              onChange={(e) => setNegative(e.target.value)}
+              placeholder="e.g. extra fingers, blurry, deformed paws"
+              rows={2}
+              css={{
+                border: `1px solid ${theme.colors.border}`,
+                outline: "none",
+                background: theme.colors.background.main,
+                resize: "none",
+                width: "100%",
+                padding: "6px 8px",
+                borderRadius: 8,
+                ...theme.typography.caption,
+                color: theme.colors.text.main,
+                lineHeight: 1.4,
+                "&:focus": {
+                  borderColor: theme.colors.text.muted,
+                },
+                "&::placeholder": { color: theme.colors.text.muted },
+              }}
+            />
           </div>
         )}
         <textarea
@@ -1090,29 +1269,67 @@ const Composer = ({
                 </span>
               </button>
             )}
-            {showImg2imgToggle && (
+            {showAttachmentModeToggle && (
+              <>
+                <AttachmentModeToggle
+                  mode={attachmentMode}
+                  onChange={setAttachmentMode}
+                  canInpaint={attached.length === 1}
+                  theme={theme}
+                />
+                {attachmentMode === "inpaint" && (
+                  <button
+                    type="button"
+                    aria-label={mask ? "edit mask" : "draw mask"}
+                    title={
+                      mask
+                        ? "edit mask — open the painter to refine the region"
+                        : "draw mask — pick the region to repaint"
+                    }
+                    onClick={() => setMaskEditorOpen(true)}
+                    css={{
+                      ...composerSubButtonCss(theme),
+                      color: mask
+                        ? theme.colors.activity.on
+                        : theme.colors.text.muted,
+                    }}
+                  >
+                    <span
+                      className="material-icons-outlined"
+                      css={{ fontSize: 22 }}
+                    >
+                      {mask ? "brush" : "edit"}
+                    </span>
+                  </button>
+                )}
+              </>
+            )}
+            {showNegativeToggle && (
               <button
                 type="button"
-                aria-label={img2img ? "img2img: on" : "img2img: off"}
-                title={
-                  img2img
-                    ? "img2img on — attached image will be edited via flux kontext"
-                    : "img2img off — attached image will be analyzed by the chat model"
+                aria-label={
+                  negativeOpen ? "hide negative prompt" : "show negative prompt"
                 }
-                aria-pressed={img2img}
-                onClick={toggleImg2img}
+                title={
+                  negative.trim().length > 0
+                    ? "negative prompt set — click to edit"
+                    : "add a negative prompt (things to avoid)"
+                }
+                aria-pressed={negativeOpen}
+                onClick={() => setNegativeOpen((v) => !v)}
                 css={{
                   ...composerSubButtonCss(theme),
-                  color: img2img
-                    ? theme.colors.activity.on
-                    : theme.colors.text.muted,
+                  color:
+                    negative.trim().length > 0
+                      ? theme.colors.activity.on
+                      : theme.colors.text.muted,
                 }}
               >
                 <span
                   className="material-icons-outlined"
                   css={{ fontSize: 22 }}
                 >
-                  auto_awesome
+                  block
                 </span>
               </button>
             )}
@@ -1131,7 +1348,7 @@ const Composer = ({
               <ModelPicker
                 value={model ?? null}
                 onChange={onModelChange}
-                disabled={img2img && attached.length > 0}
+                disabled={attachmentMode !== "off" && attached.length > 0}
               />
             )}
             {streaming && onStop ? (
@@ -1173,6 +1390,86 @@ const Composer = ({
           </div>
         </div>
       </div>
+      {maskEditorOpen && attached[0] && (
+        <MaskEditor
+          imageSrc={attached[0].preview}
+          onCancel={() => setMaskEditorOpen(false)}
+          onDone={(m) => {
+            setMask(m);
+            setMaskEditorOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+};
+
+const AttachmentModeToggle = ({
+  mode,
+  onChange,
+  canInpaint,
+  theme,
+}: {
+  mode: AttachmentMode;
+  onChange: (next: AttachmentMode) => void;
+  canInpaint: boolean;
+  theme: Theme;
+}) => {
+  // Three-state pill: off / edit / inpaint. Hidden inpaint when more
+  // than one image is attached — Flux Fill takes exactly one base.
+  const choices: { value: AttachmentMode; icon: string; label: string }[] = [
+    { value: "off", icon: "visibility", label: "look only" },
+    { value: "edit", icon: "auto_awesome", label: "edit (img2img)" },
+  ];
+  if (canInpaint) {
+    choices.push({ value: "inpaint", icon: "brush", label: "inpaint mask" });
+  }
+  return (
+    <div
+      role="radiogroup"
+      aria-label="attachment mode"
+      css={{
+        display: "inline-flex",
+        alignItems: "center",
+        padding: 2,
+        gap: 2,
+        borderRadius: 8,
+        background: theme.colors.background.main,
+        border: `1px solid ${theme.colors.border}`,
+      }}
+    >
+      {choices.map((c) => {
+        const active = mode === c.value;
+        return (
+          <button
+            key={c.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            aria-label={c.label}
+            title={c.label}
+            onClick={() => onChange(c.value)}
+            css={{
+              width: 28,
+              height: 26,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "none",
+              borderRadius: 6,
+              background: active ? theme.colors.activity.onSoft : "transparent",
+              color: active
+                ? theme.colors.activity.on
+                : theme.colors.text.muted,
+              cursor: "pointer",
+            }}
+          >
+            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+              {c.icon}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 };

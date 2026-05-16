@@ -193,6 +193,10 @@ pub fn create_app(
                         .route(
                             "/{conv_id}/messages/{msg_id}/image/{idx}",
                             web::get().to(handlers::get_message_image),
+                        )
+                        .route(
+                            "/{conv_id}/messages/{msg_id}/mask",
+                            web::get().to(handlers::get_message_mask),
                         ),
                 )
                 .service(

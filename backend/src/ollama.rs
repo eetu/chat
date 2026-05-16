@@ -304,16 +304,42 @@ pub async fn describe_image(
 /// the persona/voice the rewriter should adopt — see
 /// `handlers::personas`. Best-effort: callers fall back to the original
 /// prompt on error.
+/// Rewritten positive prompt plus a list of failure modes to drive the
+/// negative branch of an inpaint workflow. The negative is best-effort:
+/// when the refiner doesn't return JSON, we fall back to treating the
+/// whole reply as the positive and leave negative empty.
+#[derive(Debug, Clone, Default)]
+pub struct RefinedPrompt {
+    pub positive: String,
+    pub negative: String,
+}
+
 pub async fn refine_image_prompt(
     state: Arc<AppState>,
     model: &str,
     system_prompt: &str,
     history: &[ChatMessage],
-) -> Result<String, reqwest::Error> {
+) -> Result<RefinedPrompt, reqwest::Error> {
+    // Wrap the persona prompt in an output-shape instruction asking for
+    // strict JSON. Negative-prompt support only kicks in on workflows
+    // that run real CFG (today: Flux Fill inpaint); for everything else
+    // the field is generated but ignored, which is cheap insurance for
+    // when more CFG-aware paths land.
+    let composite_system = format!(
+        "{system_prompt}\n\nReturn STRICT JSON with two string fields:\n\
+         - \"positive\": the rewritten prompt, following all the rules above. \
+         One paragraph, plain text, no markdown.\n\
+         - \"negative\": a short comma-separated list (6-10 items) of failure modes \
+         the image generator should avoid for this kind of request — typical diffusion \
+         glitches such as anatomical errors, duplicated objects, broken geometry, \
+         floating elements, extra fingers, melted faces, illegible text, etc. \
+         Terse phrases, no full sentences.\n\
+         Output the JSON object only — no markdown fences, no preamble, no commentary."
+    );
     let mut messages = Vec::with_capacity(history.len() + 1);
     messages.push(ChatMessage {
         role: "system".into(),
-        content: system_prompt.to_string(),
+        content: composite_system,
         images: None,
     });
     messages.extend(history.iter().cloned());
@@ -323,6 +349,11 @@ pub async fn refine_image_prompt(
         "model": model,
         "messages": messages,
         "stream": false,
+        // Force JSON output where the upstream supports it. Ollama
+        // honours `format: "json"` on most chat-completion models;
+        // older models that ignore it still surface JSON in the body
+        // because the system prompt asks for it directly.
+        "format": "json",
     });
 
     let res = state
@@ -333,7 +364,49 @@ pub async fn refine_image_prompt(
         .await?
         .error_for_status()?;
     let parsed: OllamaChatResponse = res.json().await?;
-    Ok(parsed.message.content.trim().to_string())
+    Ok(parse_refined_prompt(parsed.message.content.trim()))
+}
+
+/// Pull `{positive, negative}` from the refiner reply. Tolerates
+/// markdown code fences and replies that aren't quite JSON — when
+/// parsing fails we treat the whole reply as the positive prompt and
+/// leave negative empty so the caller still gets the legacy behaviour.
+fn parse_refined_prompt(raw: &str) -> RefinedPrompt {
+    let trimmed = raw.trim();
+    let stripped = strip_code_fence(trimmed);
+    #[derive(serde::Deserialize)]
+    struct Shape {
+        #[serde(default)]
+        positive: String,
+        #[serde(default)]
+        negative: String,
+    }
+    match serde_json::from_str::<Shape>(stripped) {
+        Ok(s) => RefinedPrompt {
+            positive: s.positive.trim().to_string(),
+            negative: s.negative.trim().to_string(),
+        },
+        Err(e) => {
+            tracing::warn!(
+                "refiner JSON parse failed: {e}; treating reply as positive-only"
+            );
+            RefinedPrompt {
+                positive: trimmed.to_string(),
+                negative: String::new(),
+            }
+        }
+    }
+}
+
+fn strip_code_fence(s: &str) -> &str {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("```json") {
+        return rest.trim_start().trim_end_matches("```").trim();
+    }
+    if let Some(rest) = s.strip_prefix("```") {
+        return rest.trim_start().trim_end_matches("```").trim();
+    }
+    s
 }
 
 fn sanitize_title(raw: &str) -> String {
@@ -548,4 +621,41 @@ pub fn sse_delta(content: &str) -> sse::Event {
 /// Helper to emit a typed JSON event.
 pub fn sse_json(event: &str, value: &serde_json::Value) -> sse::Event {
     sse::Event::Data(sse::Data::new(value.to_string()).event(event))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_strict_json_refiner_reply() {
+        let r = parse_refined_prompt(
+            r#"{"positive": "a cat in a tree at golden hour", "negative": "extra fingers, blurry, deformed paws"}"#,
+        );
+        assert_eq!(r.positive, "a cat in a tree at golden hour");
+        assert_eq!(r.negative, "extra fingers, blurry, deformed paws");
+    }
+
+    #[test]
+    fn parses_json_inside_code_fence() {
+        let r = parse_refined_prompt(
+            "```json\n{\"positive\":\"p\",\"negative\":\"n\"}\n```",
+        );
+        assert_eq!(r.positive, "p");
+        assert_eq!(r.negative, "n");
+    }
+
+    #[test]
+    fn falls_back_to_positive_only_when_not_json() {
+        let r = parse_refined_prompt("a plain paragraph that's not json at all");
+        assert_eq!(r.positive, "a plain paragraph that's not json at all");
+        assert_eq!(r.negative, "");
+    }
+
+    #[test]
+    fn handles_missing_negative_field() {
+        let r = parse_refined_prompt(r#"{"positive": "only positive given"}"#);
+        assert_eq!(r.positive, "only positive given");
+        assert_eq!(r.negative, "");
+    }
 }

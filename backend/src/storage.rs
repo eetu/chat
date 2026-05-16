@@ -76,6 +76,10 @@ pub struct Message {
     /// Number of attachments in `message_images`. Bytes are loaded on
     /// demand so the chat list endpoint stays cheap.
     pub image_count: usize,
+    /// True when the row has an inpaint mask attached (kind='mask').
+    /// Lets the UI render the base image with a translucent mask
+    /// overlay without round-tripping a separate HEAD request.
+    pub has_mask: bool,
     /// Lifecycle of the message. `done` for fully-persisted messages,
     /// `pending` for assistant rows awaiting generation, `error` for
     /// failed generations (with the error text in `content`).
@@ -160,6 +164,19 @@ impl Storage {
         ) {
             if !e.to_string().to_lowercase().contains("duplicate column") {
                 tracing::debug!("status column migration noop: {e}");
+            }
+        }
+        // Distinguish ordinary attachments from auxiliary blobs like an
+        // inpaint mask. Default 'image' keeps every pre-existing row
+        // categorised as a base attachment, so legacy chat history and
+        // img2img references still surface through the unchanged
+        // reader paths.
+        if let Err(e) = conn.execute(
+            "ALTER TABLE message_images ADD COLUMN kind TEXT NOT NULL DEFAULT 'image'",
+            [],
+        ) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                tracing::debug!("message_images kind migration noop: {e}");
             }
         }
         migrate_attachments_to_blobs(&conn)?;
@@ -292,10 +309,17 @@ impl Storage {
     ) -> Result<Vec<Message>, StorageError> {
         self.get_conversation(user_sub, conv_id)?;
         let conn = self.inner.lock().unwrap();
+        // Count only renderable attachments here; mask blobs (kind='mask')
+        // are auxiliary inputs to the inpaint pipeline and shouldn't surface
+        // in the message DTO's image_count or drive thumbnail rendering.
         let mut stmt = conn.prepare(
             "SELECT m.id, m.role, m.content, m.created_at, m.status,
-                    (SELECT COUNT(*) FROM message_images mi WHERE mi.message_id = m.id)
-                        AS image_count
+                    (SELECT COUNT(*) FROM message_images mi
+                     WHERE mi.message_id = m.id AND mi.kind = 'image')
+                        AS image_count,
+                    EXISTS(SELECT 1 FROM message_images mi
+                           WHERE mi.message_id = m.id AND mi.kind = 'mask')
+                        AS has_mask
              FROM messages m
              WHERE m.conv_id = ?1
              ORDER BY m.id ASC",
@@ -308,6 +332,7 @@ impl Storage {
                 created_at: row.get(3)?,
                 status: row.get(4)?,
                 image_count: row.get::<_, i64>(5)? as usize,
+                has_mask: row.get::<_, i64>(6)? != 0,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
@@ -320,6 +345,7 @@ impl Storage {
         role: &str,
         content: &str,
         images: &[String],
+        mask: Option<&str>,
     ) -> Result<i64, StorageError> {
         self.get_conversation(user_sub, conv_id)?;
         let now = Utc::now().timestamp();
@@ -332,6 +358,13 @@ impl Storage {
         let id = conn.last_insert_rowid();
         if !images.is_empty() {
             insert_message_images(&conn, id, images)?;
+        }
+        if let Some(m) = mask.filter(|s| !s.is_empty()) {
+            // Stash the mask after the base images so the UNIQUE(message_id,
+            // idx) constraint stays satisfied. The kind column is what
+            // partitions readers; idx is only used for ordering within
+            // base images today.
+            insert_message_mask(&conn, id, images.len(), m)?;
         }
         conn.execute(
             "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
@@ -437,7 +470,7 @@ impl Storage {
         let row: Option<(Vec<u8>, String)> = conn
             .query_row(
                 "SELECT bytes, mime FROM message_images
-                 WHERE message_id = ?1 AND idx = ?2",
+                 WHERE message_id = ?1 AND idx = ?2 AND kind = 'image'",
                 params![msg_id, idx as i64],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -447,6 +480,8 @@ impl Storage {
 
     /// Base64-encoded variant for the chat history rebuild path that
     /// forwards user-side images to Ollama as part of `messages[].images`.
+    /// Excludes mask blobs — those are inpaint inputs, not part of the
+    /// vision history sent to chat models.
     pub fn get_message_images_b64(
         &self,
         msg_id: i64,
@@ -456,7 +491,7 @@ impl Storage {
         let conn = self.inner.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT bytes FROM message_images
-             WHERE message_id = ?1 ORDER BY idx ASC",
+             WHERE message_id = ?1 AND kind = 'image' ORDER BY idx ASC",
         )?;
         let rows = stmt.query_map(params![msg_id], |r| r.get::<_, Vec<u8>>(0))?;
         let mut out = Vec::new();
@@ -465,6 +500,60 @@ impl Storage {
             out.push(B64.encode(bytes));
         }
         Ok(out)
+    }
+
+    /// Raw bytes + MIME of a message's inpaint mask, if any. Used by the
+    /// per-message mask endpoint and by edit/regenerate paths that need
+    /// to re-supply the mask on the next /api/chat call.
+    pub fn get_message_mask_bytes(
+        &self,
+        user_sub: &str,
+        conv_id: &str,
+        msg_id: i64,
+    ) -> Result<(Vec<u8>, String), StorageError> {
+        self.get_conversation(user_sub, conv_id)?;
+        let conn = self.inner.lock().unwrap();
+        let owned: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1 AND conv_id = ?2",
+                params![msg_id, conv_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if owned.is_none() {
+            return Err(StorageError::NotFound);
+        }
+        let row: Option<(Vec<u8>, String)> = conn
+            .query_row(
+                "SELECT bytes, mime FROM message_images
+                 WHERE message_id = ?1 AND kind = 'mask'
+                 ORDER BY idx ASC LIMIT 1",
+                params![msg_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        row.ok_or(StorageError::NotFound)
+    }
+
+    /// Base64 mask for the resend paths (edit / regenerate). Returns
+    /// None when the message has no mask attached.
+    pub fn get_message_mask_b64(
+        &self,
+        msg_id: i64,
+    ) -> Result<Option<String>, StorageError> {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine;
+        let conn = self.inner.lock().unwrap();
+        let bytes: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT bytes FROM message_images
+                 WHERE message_id = ?1 AND kind = 'mask'
+                 ORDER BY idx ASC LIMIT 1",
+                params![msg_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(bytes.map(|b| B64.encode(b)))
     }
 
     /// Delete every message *after* the given anchor row, leaving the
@@ -791,8 +880,8 @@ fn insert_message_images(
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
     let mut stmt = conn.prepare(
-        "INSERT INTO message_images(message_id, idx, mime, bytes)
-         VALUES(?1, ?2, ?3, ?4)",
+        "INSERT INTO message_images(message_id, idx, mime, bytes, kind)
+         VALUES(?1, ?2, ?3, ?4, 'image')",
     )?;
     for (idx, s) in b64_images.iter().enumerate() {
         let bytes = B64
@@ -805,6 +894,31 @@ fn insert_message_images(
         })?;
         stmt.execute(params![message_id, idx as i64, mime, bytes])?;
     }
+    Ok(())
+}
+
+/// Persist an inpaint mask alongside a message's base attachments. The
+/// caller picks `idx_offset` so the mask lands past the last base image,
+/// keeping `UNIQUE(message_id, idx)` satisfied without renumbering.
+fn insert_message_mask(
+    conn: &Connection,
+    message_id: i64,
+    idx_offset: usize,
+    b64_mask: &str,
+) -> Result<(), StorageError> {
+    use base64::engine::general_purpose::STANDARD as B64;
+    use base64::Engine;
+    let bytes = B64
+        .decode(b64_mask.as_bytes())
+        .map_err(|e| StorageError::Invalid(format!("base64 decode (mask): {e}")))?;
+    let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
+        StorageError::Invalid("unsupported mask format — accepts png".into())
+    })?;
+    conn.execute(
+        "INSERT INTO message_images(message_id, idx, mime, bytes, kind)
+         VALUES(?1, ?2, ?3, ?4, 'mask')",
+        params![message_id, idx_offset as i64, mime, bytes],
+    )?;
     Ok(())
 }
 
@@ -1021,7 +1135,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "hi", &[]).unwrap();
+        s.append_message("a", &c.id, "user", "hi", &[], None).unwrap();
         let err = s.list_messages("b", &c.id).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
     }
@@ -1031,7 +1145,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let err = s.append_message("b", &c.id, "user", "hi", &[]).unwrap_err();
+        let err = s.append_message("b", &c.id, "user", "hi", &[], None).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         // No row was inserted.
         let alice_msgs = s.list_messages("a", &c.id).unwrap();
@@ -1043,9 +1157,9 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let m1 = s.append_message("a", &c.id, "user", "first", &[]).unwrap();
-        s.append_message("a", &c.id, "assistant", "reply", &[]).unwrap();
-        s.append_message("a", &c.id, "user", "second", &[]).unwrap();
+        let m1 = s.append_message("a", &c.id, "user", "first", &[], None).unwrap();
+        s.append_message("a", &c.id, "assistant", "reply", &[], None).unwrap();
+        s.append_message("a", &c.id, "user", "second", &[], None).unwrap();
         s.delete_messages_after("a", &c.id, m1).unwrap();
         let remaining = s.list_messages("a", &c.id).unwrap();
         assert_eq!(remaining.len(), 1);
@@ -1057,7 +1171,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let m1 = s.append_message("a", &c.id, "user", "first", &[]).unwrap();
+        let m1 = s.append_message("a", &c.id, "user", "first", &[], None).unwrap();
         let err = s.delete_messages_after("b", &c.id, m1).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
     }
@@ -1067,7 +1181,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let mid = s.append_message("a", &c.id, "user", "hi", &[]).unwrap();
+        let mid = s.append_message("a", &c.id, "user", "hi", &[], None).unwrap();
         let err = s
             .delete_message_and_after("b", &c.id, mid)
             .unwrap_err();
@@ -1107,7 +1221,7 @@ mod tests {
         let c = s.create_conversation("a", "t", None).unwrap();
         let raw = b"\x89PNG\r\n\x1a\nfake".to_vec();
         let b64 = B64.encode(&raw);
-        let mid = s.append_message("a", &c.id, "user", "img", &[b64]).unwrap();
+        let mid = s.append_message("a", &c.id, "user", "img", &[b64], None).unwrap();
         let err = s
             .get_message_image_bytes("b", &c.id, mid, 0)
             .unwrap_err();
@@ -1122,13 +1236,127 @@ mod tests {
     }
 
     #[test]
+    fn mask_persists_alongside_base_without_inflating_image_count() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let base = B64.encode(b"\x89PNG\r\n\x1a\nbase");
+        let mask = B64.encode(b"\x89PNG\r\n\x1a\nmask");
+        let mid = s
+            .append_message(
+                "a",
+                &c.id,
+                "user",
+                "inpaint please",
+                std::slice::from_ref(&base),
+                Some(&mask),
+            )
+            .unwrap();
+
+        // image_count is the surface the UI reads; mask shouldn't be
+        // counted or rendered as a thumbnail.
+        let msgs = s.list_messages("a", &c.id).unwrap();
+        let row = msgs.iter().find(|m| m.id == mid).unwrap();
+        assert_eq!(row.image_count, 1);
+
+        let (base_bytes, _) = s.get_message_image_bytes("a", &c.id, mid, 0).unwrap();
+        assert_eq!(B64.encode(&base_bytes), base);
+
+        let (mask_bytes, _) = s.get_message_mask_bytes("a", &c.id, mid).unwrap();
+        assert_eq!(B64.encode(&mask_bytes), mask);
+
+        let mask_b64 = s.get_message_mask_b64(mid).unwrap();
+        assert_eq!(mask_b64.as_deref(), Some(mask.as_str()));
+
+        // Mask bytes must never leak through the vision-history reader.
+        let history = s.get_message_images_b64(mid).unwrap();
+        assert_eq!(history, vec![base.clone()]);
+    }
+
+    #[test]
+    fn mask_is_dropped_when_message_deleted_by_anchor() {
+        // The "regenerate from this user turn" path keeps the user row
+        // (with its mask) and only trims rows strictly after it. The
+        // "delete from here" path drops the user row + everything
+        // after, which must also cascade the mask. Both behaviours
+        // ride on the FK from message_images.message_id → messages.id,
+        // so they need a regression test before subtle schema tweaks
+        // (e.g. a future BLOB-store split) can sneak in and silently
+        // strand mask rows.
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let base = B64.encode(b"\x89PNG\r\n\x1a\nbase");
+        let mask = B64.encode(b"\x89PNG\r\n\x1a\nmask");
+        let user_id = s
+            .append_message(
+                "a",
+                &c.id,
+                "user",
+                "inpaint",
+                std::slice::from_ref(&base),
+                Some(&mask),
+            )
+            .unwrap();
+        let asst_id = s
+            .append_message("a", &c.id, "assistant", "ok", &[], None)
+            .unwrap();
+        // Regenerate-from-user: trims rows strictly AFTER the user
+        // anchor. User row stays, so the mask must stay readable.
+        s.delete_messages_after("a", &c.id, user_id).unwrap();
+        let still_there = s.get_message_mask_b64(user_id).unwrap();
+        assert_eq!(still_there.as_deref(), Some(mask.as_str()));
+        // Assistant row was after the anchor — gone.
+        assert!(s.get_message_mask_b64(asst_id).unwrap().is_none());
+
+        // Delete-from-here on the user row should cascade the mask.
+        s.delete_message_and_after("a", &c.id, user_id).unwrap();
+        assert!(s.get_message_mask_b64(user_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_message_mask_b64_is_none_without_mask() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let mid = s
+            .append_message("a", &c.id, "user", "no mask here", &[], None)
+            .unwrap();
+        assert!(s.get_message_mask_b64(mid).unwrap().is_none());
+    }
+
+    #[test]
+    fn open_is_idempotent_for_new_columns() {
+        // Re-opening the same on-disk database must not blow up on the
+        // ALTER TABLE migrations — each ADD COLUMN runs once, the
+        // second open observes "duplicate column" and treats it as a noop.
+        let path = std::env::temp_dir().join(format!(
+            "chat-test-{}.db",
+            Uuid::new_v4()
+        ));
+        let _first = Storage::open(&path).expect("first open");
+        drop(_first);
+        let second = Storage::open(&path).expect("second open");
+        drop(second);
+        // Clean up the temp file + WAL/SHM siblings so subsequent test
+        // runs don't accumulate stale databases.
+        for suffix in ["", "-shm", "-wal"] {
+            let _ = std::fs::remove_file(format!(
+                "{}{}",
+                path.display(),
+                suffix
+            ));
+        }
+    }
+
+    #[test]
     fn append_message_rejects_non_image_bytes() {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
         let bogus = B64.encode(b"not an image at all");
         let err = s
-            .append_message("a", &c.id, "user", "img", std::slice::from_ref(&bogus))
+            .append_message("a", &c.id, "user", "img", std::slice::from_ref(&bogus), None)
             .unwrap_err();
         assert!(matches!(err, StorageError::Invalid(_)));
     }
@@ -1140,7 +1368,7 @@ mod tests {
         let c = s.create_conversation("a", "t", None).unwrap();
         let raw = B64.encode(b"\x89PNG\r\n\x1a\nfake");
         let mid = s
-            .append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw))
+            .append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw), None)
             .unwrap();
         s.delete_conversation("a", &c.id).unwrap();
         // Messages + images are gone via FK cascade.
@@ -1154,7 +1382,7 @@ mod tests {
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
         let raw = B64.encode(b"\x89PNG\r\n\x1a\nfake");
-        s.append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw))
+        s.append_message("a", &c.id, "user", "hi", std::slice::from_ref(&raw), None)
             .unwrap();
         s.delete_user("a").unwrap();
         let err = s.list_messages("a", &c.id).unwrap_err();
@@ -1173,9 +1401,9 @@ mod tests {
         seed_users(&s);
         let a_conv = s.create_conversation("a", "alice room", None).unwrap();
         let b_conv = s.create_conversation("b", "bob room", None).unwrap();
-        s.append_message("a", &a_conv.id, "user", "make a kanidm guide", &[])
+        s.append_message("a", &a_conv.id, "user", "make a kanidm guide", &[], None)
             .unwrap();
-        s.append_message("b", &b_conv.id, "user", "kanidm setup notes", &[])
+        s.append_message("b", &b_conv.id, "user", "kanidm setup notes", &[], None)
             .unwrap();
         let hits = s.search("a", "kanidm", 10).unwrap();
         assert_eq!(hits.len(), 1);
@@ -1188,7 +1416,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "implementing actix-web handlers", &[])
+        s.append_message("a", &c.id, "user", "implementing actix-web handlers", &[], None)
             .unwrap();
         let hits = s.search("a", "implement", 10).unwrap();
         assert_eq!(hits.len(), 1);
@@ -1214,7 +1442,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "hello world", &[]).unwrap();
+        s.append_message("a", &c.id, "user", "hello world", &[], None).unwrap();
         assert!(s.search("a", "", 10).unwrap().is_empty());
         assert!(s.search("a", "   ", 10).unwrap().is_empty());
     }
@@ -1224,7 +1452,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "quoted reply", &[]).unwrap();
+        s.append_message("a", &c.id, "user", "quoted reply", &[], None).unwrap();
         let hits = s.search("a", "\"quoted\"", 10).unwrap();
         assert_eq!(hits.len(), 1);
     }

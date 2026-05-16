@@ -252,11 +252,20 @@ struct MessageDto {
     /// responses stay small.
     #[serde(skip_serializing_if = "is_zero")]
     image_count: usize,
+    /// True when this row has an inpaint mask attached, fetchable via
+    /// `/api/conversations/{cid}/messages/{mid}/mask`. Drives the
+    /// mask-overlay rendering in the UI without a HEAD probe.
+    #[serde(skip_serializing_if = "is_false")]
+    has_mask: bool,
     status: String,
 }
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn message_to_dto(m: crate::storage::Message) -> MessageDto {
@@ -266,6 +275,7 @@ fn message_to_dto(m: crate::storage::Message) -> MessageDto {
         content: m.content,
         created_at: m.created_at,
         image_count: m.image_count,
+        has_mask: m.has_mask,
         status: m.status,
     }
 }
@@ -300,6 +310,36 @@ pub async fn get_message_image(
     match state
         .storage
         .get_message_image_bytes(&user.sub, &conv_id, msg_id, idx)
+    {
+        Ok((bytes, mime)) => HttpResponse::Ok()
+            .content_type(mime)
+            .insert_header(("Cache-Control", "private, max-age=86400, immutable"))
+            .insert_header(("ETag", etag))
+            .body(bytes),
+        Err(e) => storage_err(e),
+    }
+}
+
+/// Fetch the inpaint mask attached to a single message. Same shape as
+/// `get_message_image` but reads the kind='mask' row instead. Used by
+/// the edit / regenerate paths so the resend can re-supply the mask to
+/// `/api/chat` without round-tripping through the user.
+pub async fn get_message_mask(
+    state: web::Data<Arc<AppState>>,
+    user: AuthUser,
+    req: actix_web::HttpRequest,
+    path: web::Path<(String, i64)>,
+) -> HttpResponse {
+    let (conv_id, msg_id) = path.into_inner();
+    let etag = format!("\"m{msg_id}-mask\"");
+    if let Some(h) = req.headers().get("if-none-match") {
+        if h.to_str().map(|v| v == etag).unwrap_or(false) {
+            return HttpResponse::NotModified().finish();
+        }
+    }
+    match state
+        .storage
+        .get_message_mask_bytes(&user.sub, &conv_id, msg_id)
     {
         Ok((bytes, mime)) => HttpResponse::Ok()
             .content_type(mime)
@@ -386,6 +426,27 @@ pub struct ChatBody {
     /// reply landed (e.g. they hit stop pre-stream).
     #[serde(default)]
     pub regenerate_from_user: Option<i64>,
+    /// Image-mode sub-routing. `"txt2img"` and `"img2img"` are derivable
+    /// from `images` alone, but `"inpaint"` carries a mask alongside a
+    /// single base image and needs an explicit signal so the handler
+    /// doesn't have to guess intent. Omitting it preserves the old
+    /// "images.len() decides" behaviour. Ignored when `mode != "image"`.
+    #[serde(default)]
+    pub sub_mode: Option<String>,
+    /// Base64-encoded inpaint mask aligned to `images[0]` — white pixels
+    /// (red channel) mark the region to repaint, black pixels keep the
+    /// original. Required when `sub_mode == "inpaint"`. Ignored
+    /// otherwise.
+    #[serde(default)]
+    pub mask: Option<String>,
+    /// Override for the negative-prompt branch of the inpaint workflow.
+    /// When present and non-empty, takes precedence over the refiner's
+    /// auto-generated negative. Empty / missing leaves the field to the
+    /// refiner (when enabled) or to "" (no negative). Only effective on
+    /// workflows that run real CFG — Flux Fill / inpaint today; Kontext
+    /// at cfg=1 ignores the negative branch entirely.
+    #[serde(default)]
+    pub negative: Option<String>,
 }
 
 pub async fn list_personas() -> HttpResponse {
@@ -847,6 +908,35 @@ pub async fn chat(
         .map_err(storage_actix_err)?;
 
     let images: Vec<String> = body.images.clone().unwrap_or_default();
+    let mask: Option<String> = body
+        .mask
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let sub_mode = body
+        .sub_mode
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let inpaint_requested = sub_mode == Some("inpaint") || mask.is_some();
+    if inpaint_requested {
+        if body.mode.as_deref() != Some("image") {
+            return Err(actix_web::error::ErrorBadRequest(
+                "inpaint requires mode=\"image\"",
+            ));
+        }
+        if images.len() != 1 {
+            return Err(actix_web::error::ErrorBadRequest(
+                "inpaint requires exactly one base image",
+            ));
+        }
+        if mask.is_none() {
+            return Err(actix_web::error::ErrorBadRequest(
+                "inpaint requires a mask",
+            ));
+        }
+    }
     if let Some(retry_id) = body.retry_assistant_id {
         // Drop the failed assistant row; the prior user message stays in
         // place and becomes the prompt source for this turn. Title was
@@ -865,7 +955,14 @@ pub async fn chat(
     } else {
         state
             .storage
-            .append_message(&user.sub, &conv.id, "user", &body.content, &images)
+            .append_message(
+                &user.sub,
+                &conv.id,
+                "user",
+                &body.content,
+                &images,
+                mask.as_deref(),
+            )
             .map_err(storage_actix_err)?;
 
         let title_seed = body.content.chars().take(60).collect::<String>();
@@ -930,6 +1027,14 @@ pub async fn chat(
     let model_for_rename = model.clone();
     let state_clone: Arc<AppState> = state.get_ref().clone();
     let image_mode = body.mode.as_deref() == Some("image");
+    // Captured outside the spawn so the closure can read the override
+    // without borrowing the request body.
+    let body_negative: Option<String> = body
+        .negative
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
 
     if image_mode {
         let pending_id = state
@@ -944,20 +1049,31 @@ pub async fn chat(
         // actually configured server-side.
         let refine_enabled = refiner_model.is_some() && body.refine.unwrap_or(true);
         let persona_system = personas::system_prompt(body.persona.as_deref());
-        // Route to ComfyUI Kontext when the user attached one or more
-        // reference images AND a ComfyUI host is configured. Otherwise
-        // fall back to the Ollama text→image path even with an
-        // attachment (Ollama will ignore it on a non-vision image
-        // model). Multiple attachments stack as additional Kontext
-        // references via chained ReferenceLatent nodes.
-        let kontext_inputs: Vec<String> = match (
-            state.settings.comfyui_url.as_ref(),
-            body.images.as_ref(),
-        ) {
-            (Some(_), Some(v)) if !v.is_empty() => v.clone(),
+        // Image-mode dispatch. Three branches share the same SSE
+        // plumbing below:
+        // - inpaint  → ComfyUI Flux Fill with a base + mask (the
+        //              request validation above guarantees exactly one
+        //              image and a present mask).
+        // - kontext  → ComfyUI Flux Kontext with ≥1 reference image.
+        // - ollama   → text→image fallback (no attachments or no
+        //              ComfyUI host configured).
+        let comfy_available = state.settings.comfyui_url.is_some();
+        let kontext_inputs: Vec<String> = match (comfy_available, body.images.as_ref()) {
+            (true, Some(v)) if !v.is_empty() => v.clone(),
             _ => Vec::new(),
         };
-        let use_kontext = !kontext_inputs.is_empty();
+        let inpaint_inputs: Option<(String, String)> = match (
+            comfy_available,
+            inpaint_requested,
+            kontext_inputs.first(),
+            mask.as_ref(),
+        ) {
+            (true, true, Some(base), Some(m)) => Some((base.clone(), m.clone())),
+            _ => None,
+        };
+        let use_inpaint = inpaint_inputs.is_some();
+        let use_kontext = !use_inpaint && !kontext_inputs.is_empty();
+        let use_comfy = use_inpaint || use_kontext;
         let image_sem = state.image_sem.clone();
         tokio::spawn(async move {
             // Hold a permit for the duration of this image job. With the
@@ -989,15 +1105,15 @@ pub async fn chat(
                     return;
                 }
             };
-            // VRAM coordination: Kontext FP8 (~12 GB) cannot share host
-            // memory with chat / refiner models on a 24 GB box. Tell
-            // Ollama to drop the chat model before invoking ComfyUI.
-            // Evict only after holding the permit so concurrent senders
-            // don't trigger redundant eviction churn while queued.
-            if use_kontext {
+            // VRAM coordination: Flux Kontext / Fill (~12 GB) cannot
+            // share host memory with chat / refiner models on a 24 GB
+            // box. Tell Ollama to drop the chat model before invoking
+            // ComfyUI. Evict only after holding the permit so concurrent
+            // senders don't trigger redundant eviction churn while queued.
+            if use_comfy {
                 ollama::evict(&state_clone, &model_for_gen).await;
             }
-            let refined = if refine_enabled {
+            let refined: Option<ollama::RefinedPrompt> = if refine_enabled {
                 match refiner_model.as_deref() {
                     Some(m) => {
                         let r = ollama::refine_image_prompt(
@@ -1007,11 +1123,11 @@ pub async fn chat(
                             &refiner_history,
                         )
                         .await;
-                        if use_kontext {
+                        if use_comfy {
                             ollama::evict(&state_clone, m).await;
                         }
                         match r {
-                            Ok(r) if !r.is_empty() => Some(r),
+                            Ok(r) if !r.positive.is_empty() => Some(r),
                             Ok(_) => None,
                             Err(e) => {
                                 tracing::warn!(
@@ -1040,13 +1156,22 @@ pub async fn chat(
                     .find(|m| m.role == "assistant" && !m.content.is_empty())
                     .map(|m| m.content.clone())
             };
-            let composed_prompt = match (&refined, &context_prefix) {
-                (Some(r), _) => r.clone(),
+            let composed_prompt = match (refined.as_ref(), &context_prefix) {
+                (Some(r), _) => r.positive.clone(),
                 (None, Some(ctx)) => format!(
                     "Context from the previous image: {ctx}\n\nNew request: {prompt}"
                 ),
                 (None, None) => prompt.clone(),
             };
+            // Negative-prompt precedence: explicit client override wins;
+            // otherwise the refiner's generated negative (when refine
+            // ran); empty when neither. Only inpaint applies it today
+            // — Kontext drops it on the floor because cfg=1 squashes
+            // the negative branch.
+            let negative_text: String = body_negative
+                .clone()
+                .or_else(|| refined.as_ref().map(|r| r.negative.clone()))
+                .unwrap_or_default();
             let final_prompt = composed_prompt.as_str();
 
             // Wire cancellation: when the SSE client disconnects, the
@@ -1078,7 +1203,18 @@ pub async fn chat(
                     let _ = progress_tx.try_send(Ok(payload));
                 },
             );
-            let gen_result = if !kontext_inputs.is_empty() {
+            let gen_result = if let Some((base, mask_bytes)) = inpaint_inputs {
+                comfyui::generate_inpaint(
+                    &state_clone,
+                    final_prompt,
+                    &negative_text,
+                    &base,
+                    &mask_bytes,
+                    cancel_fut,
+                    Some(progress_cb),
+                )
+                .await
+            } else if !kontext_inputs.is_empty() {
                 comfyui::generate_kontext(
                     &state_clone,
                     final_prompt,
@@ -1115,7 +1251,7 @@ pub async fn chat(
                     // a vision description of what was rendered (refine off
                     // + refiner available) so the next turn has context.
                     let caption = if let Some(r) = refined {
-                        r
+                        r.positive
                     } else if let Some(m) = refiner_model.as_deref() {
                         let d = match ollama::describe_image(
                             state_clone.clone(),
@@ -1130,7 +1266,7 @@ pub async fn chat(
                                 String::new()
                             }
                         };
-                        if use_kontext {
+                        if use_comfy {
                             ollama::evict(&state_clone, m).await;
                         }
                         d
@@ -1203,7 +1339,7 @@ pub async fn chat(
             // T5 + CLIP + VAE don't sit resident between requests. Next
             // job reloads from disk in ~10–15 s but the chat / refiner
             // models get the RAM back in the meantime.
-            if use_kontext {
+            if use_comfy {
                 comfyui::free_memory(&state_clone).await;
             }
         });
@@ -1351,6 +1487,7 @@ pub async fn chat(
                         "assistant",
                         &outcome.content,
                         &[],
+                        None,
                     ) {
                         tracing::error!("failed to persist assistant message: {e}");
                     }

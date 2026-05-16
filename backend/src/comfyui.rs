@@ -41,9 +41,12 @@ pub enum ProgressEvent {
 /// stack frame.
 pub type ProgressCallback = Arc<dyn Fn(ProgressEvent) + Send + Sync + 'static>;
 
-/// Save-node id in the workflow template — used to find the output image
-/// in the history response.
-const SAVE_NODE_ID: &str = "9";
+/// Save-node id in the Kontext workflow template — used to find the
+/// output image in the history response.
+const KONTEXT_SAVE_NODE_ID: &str = "9";
+
+/// Save-node id in the Flux Fill inpaint workflow.
+const INPAINT_SAVE_NODE_ID: &str = "11";
 
 /// Cap how long we wait for ComfyUI to finish a single job. On Apple
 /// Silicon (MPS) Flux Kontext Q6_K samples at ~75 s/step at 1024² —
@@ -194,7 +197,7 @@ fn build_workflow(prompt: &str, filenames: &[String], seed: u64) -> serde_json::
         }),
     );
     wf.insert(
-        SAVE_NODE_ID.into(),
+        KONTEXT_SAVE_NODE_ID.into(),
         json!({
             "class_type": "SaveImage",
             "inputs": { "filename_prefix": "chat_kontext", "images": ["8", 0] }
@@ -249,48 +252,90 @@ where
     let client_id = Uuid::new_v4().to_string();
 
     // 1. Upload each reference image and remember its server-side name.
-    // MIME is sniffed from each blob so the multipart Content-Type and
-    // filename extension match the bytes, otherwise ComfyUI's LoadImage
-    // node rejects the file.
     let mut filenames: Vec<String> = Vec::with_capacity(input_images_b64.len());
     for (i, b64) in input_images_b64.iter().enumerate() {
-        let bytes = STANDARD.decode(b64).map_err(|e| {
-            tracing::warn!("base64 decode of user image #{i} failed: {e}");
-            ChatStreamError::EmptyImage
-        })?;
-        let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
-            tracing::warn!("rejecting unsupported image format for kontext upload (#{i})");
-            ChatStreamError::EmptyImage
-        })?;
-        let ext = crate::image_kind::extension(mime);
-        let upload_filename = format!("chat-{}.{ext}", Uuid::new_v4());
-        let part = reqwest::multipart::Part::bytes(bytes)
-            .file_name(upload_filename)
-            .mime_str(mime)
-            .map_err(ChatStreamError::Http)?;
-        let form = reqwest::multipart::Form::new()
-            .text("overwrite", "true")
-            .text("subfolder", "chat")
-            .part("image", part);
-        let upload: UploadResponse = state
-            .http_client
-            .post(format!("{base}/upload/image"))
-            .multipart(form)
-            .send()
-            .await
-            .map_err(ChatStreamError::Http)?
-            .error_for_status()
-            .map_err(ChatStreamError::Http)?
-            .json()
-            .await
-            .map_err(ChatStreamError::Http)?;
-        filenames.push(format!("chat/{}", upload.name));
+        filenames.push(upload_image(state, &base, b64, i).await?);
     }
 
-    // 2. Build workflow + queue prompt.
+    // 2. Build workflow + queue + watch + poll + fetch — shared with
+    // generate_inpaint via run_workflow.
     let seed: u64 = (Uuid::new_v4().as_u128() as u64) & 0x7fff_ffff_ffff_ffff;
     let workflow = build_workflow(prompt, &filenames, seed);
+    run_workflow(
+        state,
+        &base,
+        &client_id,
+        workflow,
+        KONTEXT_SAVE_NODE_ID,
+        cancel,
+        on_progress,
+    )
+    .await
+}
 
+/// Upload a single base64 image to ComfyUI's `/upload/image`. MIME is
+/// sniffed so the multipart Content-Type and filename extension match
+/// the bytes; ComfyUI's LoadImage node otherwise rejects the file.
+/// Returns the server-side filename including the `chat/` subfolder.
+async fn upload_image(
+    state: &AppState,
+    base: &str,
+    b64: &str,
+    label_for_logs: usize,
+) -> Result<String, ChatStreamError> {
+    let bytes = STANDARD.decode(b64).map_err(|e| {
+        tracing::warn!("base64 decode of comfyui upload #{label_for_logs} failed: {e}");
+        ChatStreamError::EmptyImage
+    })?;
+    let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
+        tracing::warn!(
+            "rejecting unsupported image format for comfyui upload (#{label_for_logs})"
+        );
+        ChatStreamError::EmptyImage
+    })?;
+    let ext = crate::image_kind::extension(mime);
+    let upload_filename = format!("chat-{}.{ext}", Uuid::new_v4());
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(upload_filename)
+        .mime_str(mime)
+        .map_err(ChatStreamError::Http)?;
+    let form = reqwest::multipart::Form::new()
+        .text("overwrite", "true")
+        .text("subfolder", "chat")
+        .part("image", part);
+    let upload: UploadResponse = state
+        .http_client
+        .post(format!("{base}/upload/image"))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(ChatStreamError::Http)?
+        .error_for_status()
+        .map_err(ChatStreamError::Http)?
+        .json()
+        .await
+        .map_err(ChatStreamError::Http)?;
+    Ok(format!("chat/{}", upload.name))
+}
+
+/// Queue + watch + poll + fetch for a fully-built workflow. Shared
+/// across the Kontext and Flux Fill paths since the lifecycle outside
+/// of workflow construction is identical: POST /prompt, optionally
+/// connect a WS watcher, poll /history for the named save node's
+/// output, then GET /view for the PNG bytes. `save_node_id` lets each
+/// caller pick its own SaveImage node since the templates differ.
+async fn run_workflow<F>(
+    state: &AppState,
+    base: &str,
+    client_id: &str,
+    workflow: serde_json::Value,
+    save_node_id: &str,
+    cancel: F,
+    on_progress: Option<ProgressCallback>,
+) -> Result<String, ChatStreamError>
+where
+    F: std::future::Future<Output = ()>,
+{
     let queued: PromptResponse = state
         .http_client
         .post(format!("{base}/prompt"))
@@ -307,15 +352,15 @@ where
         .await
         .map_err(ChatStreamError::Http)?;
 
-    // 2.5 Subscribe to ComfyUI's WebSocket for live progress + previews.
+    // Subscribe to ComfyUI's WebSocket for live progress + previews.
     // The guard's Drop fires on every return path below — sends the
     // cancel signal then aborts the spawned task so we never leak a WS
     // connection across requests.
     let _watcher_guard = if let Some(cb) = on_progress.as_ref().cloned() {
         let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-        let url = base.clone();
+        let url = base.to_string();
         let pid = queued.prompt_id.clone();
-        let cid = client_id.clone();
+        let cid = client_id.to_string();
         let handle = tokio::spawn(async move {
             let watcher_cancel = async move {
                 let _ = cancel_rx.await;
@@ -330,7 +375,7 @@ where
         None
     };
 
-    // 3. Poll history until outputs land. Race the poll against the
+    // Poll history until outputs land. Race the poll against the
     // cancellation signal — when the SSE client disconnects we want to
     // stop wasting compute on a render whose output nobody will see.
     tokio::pin!(cancel);
@@ -338,7 +383,7 @@ where
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
     let output_meta = loop {
         if std::time::Instant::now() >= deadline {
-            interrupt_and_dequeue(state, &base, &queued.prompt_id).await;
+            interrupt_and_dequeue(state, base, &queued.prompt_id).await;
             return Err(ChatStreamError::ComfyTimeout);
         }
         tokio::select! {
@@ -347,7 +392,7 @@ where
                     "comfyui job {} cancelled by client",
                     queued.prompt_id
                 );
-                interrupt_and_dequeue(state, &base, &queued.prompt_id).await;
+                interrupt_and_dequeue(state, base, &queued.prompt_id).await;
                 return Err(ChatStreamError::Cancelled);
             }
             _ = tokio::time::sleep(POLL_INTERVAL) => {}
@@ -369,7 +414,7 @@ where
         let entry = body.get(&queued.prompt_id);
         if let Some(images) = entry
             .and_then(|e| e.get("outputs"))
-            .and_then(|o| o.get(SAVE_NODE_ID))
+            .and_then(|o| o.get(save_node_id))
             .and_then(|n| n.get("images"))
             .and_then(|a| a.as_array())
         {
@@ -377,8 +422,6 @@ where
                 break first.clone();
             }
         }
-        // If the history entry exists but has a status with errors, bail
-        // early instead of waiting out the timeout.
         if let Some(status) = entry.and_then(|e| e.get("status")) {
             if status.get("status_str").and_then(|s| s.as_str()) == Some("error") {
                 tracing::error!("comfyui job reported error: {status}");
@@ -400,7 +443,6 @@ where
         .and_then(|v| v.as_str())
         .unwrap_or("output");
 
-    // 4. Fetch rendered PNG bytes.
     let view = state
         .http_client
         .get(format!("{base}/view"))
@@ -422,6 +464,147 @@ where
         return Err(ChatStreamError::EmptyImage);
     }
     Ok(STANDARD.encode(&view))
+}
+
+/// Build the Flux Fill masked-inpaint workflow.
+///
+/// Mirrors `files/comfyui-workflows/flux-fill-inpaint.json` on the mini
+/// host: Flux.1 Fill GGUF + DualCLIP + VAE, a LoadImage for the base
+/// pixels, a LoadImageMask reading the mask's red channel
+/// (white=repaint, black=keep), CLIPTextEncode for both positive (the
+/// user prompt) and a deliberately empty negative, InpaintModelConditioning
+/// to weave the mask into the conditioning + latent, KSampler at the
+/// model's documented defaults (20 steps, cfg=3.5, euler), VAEDecode,
+/// SaveImage.
+fn build_inpaint_workflow(
+    prompt: &str,
+    negative: &str,
+    base_filename: &str,
+    mask_filename: &str,
+    seed: u64,
+) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "1": {
+            "class_type": "UnetLoaderGGUF",
+            "inputs": { "unet_name": "flux1-fill-dev-Q6_K.gguf" },
+        },
+        "2": {
+            "class_type": "DualCLIPLoaderGGUF",
+            "inputs": {
+                "clip_name1": "t5-v1_1-xxl-encoder-Q5_K_M.gguf",
+                "clip_name2": "clip_l.safetensors",
+                "type": "flux",
+            },
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": { "vae_name": "ae.safetensors" },
+        },
+        "4": {
+            "class_type": "LoadImage",
+            "inputs": { "image": base_filename },
+        },
+        "5": {
+            "class_type": "LoadImageMask",
+            "inputs": { "image": mask_filename, "channel": "red" },
+        },
+        "6": {
+            "class_type": "CLIPTextEncode",
+            "inputs": { "text": prompt, "clip": ["2", 0] },
+        },
+        "7": {
+            "class_type": "CLIPTextEncode",
+            "inputs": { "text": negative, "clip": ["2", 0] },
+        },
+        "8": {
+            "class_type": "InpaintModelConditioning",
+            "inputs": {
+                "positive": ["6", 0],
+                "negative": ["7", 0],
+                "vae": ["3", 0],
+                "pixels": ["4", 0],
+                "mask": ["5", 0],
+                "noise_mask": true,
+            },
+        },
+        "9": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["8", 0],
+                "negative": ["8", 1],
+                "latent_image": ["8", 2],
+                "seed": seed,
+                "steps": 20,
+                "cfg": 3.5,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1.0,
+            },
+        },
+        "10": {
+            "class_type": "VAEDecode",
+            "inputs": { "samples": ["9", 0], "vae": ["3", 0] },
+        },
+        "11": {
+            "class_type": "SaveImage",
+            "inputs": { "images": ["10", 0], "filename_prefix": "fill" },
+        },
+    })
+}
+
+/// Run a Flux Fill masked-inpaint job. Shape mirrors `generate_kontext`:
+/// upload reference + mask, queue the workflow, share the WS watcher /
+/// history poll / view fetch via `run_workflow`. The caller is
+/// expected to have already evicted competing Ollama models — mini's
+/// 24 GB unified memory cannot hold the Fill diffusion model alongside
+/// chat models, and free_memory() should follow on the handler side.
+pub async fn generate_inpaint<F>(
+    state: &AppState,
+    prompt: &str,
+    negative: &str,
+    base_image_b64: &str,
+    mask_image_b64: &str,
+    cancel: F,
+    on_progress: Option<ProgressCallback>,
+) -> Result<String, ChatStreamError>
+where
+    F: std::future::Future<Output = ()>,
+{
+    if base_image_b64.is_empty() || mask_image_b64.is_empty() {
+        return Err(ChatStreamError::EmptyImage);
+    }
+    let base_url = state
+        .settings
+        .comfyui_url
+        .as_deref()
+        .ok_or(ChatStreamError::EmptyImage)?
+        .trim_end_matches('/')
+        .to_string();
+    let client_id = Uuid::new_v4().to_string();
+
+    let base_filename = upload_image(state, &base_url, base_image_b64, 0).await?;
+    let mask_filename = upload_image(state, &base_url, mask_image_b64, 1).await?;
+
+    let seed: u64 = (Uuid::new_v4().as_u128() as u64) & 0x7fff_ffff_ffff_ffff;
+    let workflow = build_inpaint_workflow(
+        prompt,
+        negative,
+        &base_filename,
+        &mask_filename,
+        seed,
+    );
+    run_workflow(
+        state,
+        &base_url,
+        &client_id,
+        workflow,
+        INPAINT_SAVE_NODE_ID,
+        cancel,
+        on_progress,
+    )
+    .await
 }
 
 /// Drop guard for the WS watcher task. Fires on every return path of
@@ -642,5 +825,53 @@ pub async fn interrupt_active(state: &AppState) {
         .await
     {
         tracing::warn!("comfyui interrupt failed: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inpaint_workflow_wires_mask_and_base() {
+        // Sanity check: shape matches files/comfyui-workflows/flux-fill-inpaint.json.
+        // Catches regressions to node ids or input names which would
+        // otherwise only surface at runtime on the mini host.
+        let wf = build_inpaint_workflow(
+            "paint sky blue",
+            "blurry, extra fingers",
+            "chat/base.png",
+            "chat/mask.png",
+            42,
+        );
+
+        assert_eq!(
+            wf["1"]["class_type"], "UnetLoaderGGUF",
+            "node 1 must load the Flux Fill GGUF"
+        );
+        assert_eq!(wf["1"]["inputs"]["unet_name"], "flux1-fill-dev-Q6_K.gguf");
+
+        assert_eq!(wf["4"]["class_type"], "LoadImage");
+        assert_eq!(wf["4"]["inputs"]["image"], "chat/base.png");
+
+        assert_eq!(wf["5"]["class_type"], "LoadImageMask");
+        assert_eq!(wf["5"]["inputs"]["image"], "chat/mask.png");
+        assert_eq!(wf["5"]["inputs"]["channel"], "red");
+
+        // The user prompt rides on the positive CLIP encode (node 6),
+        // negative on node 7. Flux Fill runs real CFG so node 7
+        // actually influences sampling.
+        assert_eq!(wf["6"]["inputs"]["text"], "paint sky blue");
+        assert_eq!(wf["7"]["inputs"]["text"], "blurry, extra fingers");
+
+        assert_eq!(wf["8"]["class_type"], "InpaintModelConditioning");
+        assert_eq!(wf["8"]["inputs"]["noise_mask"], true);
+
+        assert_eq!(wf["9"]["class_type"], "KSampler");
+        assert_eq!(wf["9"]["inputs"]["seed"], 42);
+        assert_eq!(wf["9"]["inputs"]["steps"], 20);
+
+        // SaveImage id matches the constant the poll loop watches for.
+        assert_eq!(wf[INPAINT_SAVE_NODE_ID]["class_type"], "SaveImage");
     }
 }

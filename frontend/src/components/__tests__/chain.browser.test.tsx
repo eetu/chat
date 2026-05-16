@@ -46,6 +46,15 @@ const Harness = ({
 };
 
 describe("img2img chain seed", () => {
+  beforeEach(() => {
+    try {
+      window.localStorage.removeItem("chat:attachmentMode");
+      window.localStorage.removeItem("chat:img2img");
+    } catch {
+      // ignore
+    }
+  });
+
   test("auto-attaches the suggested seed and sends it as an image", async () => {
     const sends: SendArgs[] = [];
     const screen = await render(
@@ -73,5 +82,37 @@ describe("img2img chain seed", () => {
     expect(content).toBe("paint it blue");
     expect(mode).toBe("image");
     expect(images).toEqual([SEED_PNG_B64]);
+  });
+
+  test("chain after a prior inpaint session lands in edit mode, not inpaint", async () => {
+    // Simulate a leftover preference from a previous inpaint turn —
+    // the next image-gen chain shouldn't silently re-enter inpaint
+    // since the freshly-generated image has no mask drawn yet.
+    // Confirm the suggested-seed handler downshifts to "edit" by
+    // checking the absence of a mask payload + the sub_mode falling
+    // through to undefined (so the backend infers img2img).
+    window.localStorage.setItem("chat:attachmentMode", "inpaint");
+    const sends: SendArgs[] = [];
+    const screen = await render(
+      <Harness
+        onSendSpy={(...args) => {
+          sends.push(args);
+        }}
+      />,
+    );
+
+    await expect.element(screen.getByText(/img2img/i)).toBeVisible();
+
+    const textarea = screen.getByPlaceholder("message");
+    await textarea.fill("zoom out");
+    await screen.getByLabelText("send").click();
+
+    expect(sends).toHaveLength(1);
+    const [, , mode, , , subMode, mask] = sends[0];
+    expect(mode).toBe("image");
+    // Chain forces "edit" regardless of stored attachmentMode —
+    // sub_mode is "img2img" (or undefined; backend defaults to it).
+    expect(subMode === "img2img" || subMode === undefined).toBe(true);
+    expect(mask).toBeUndefined();
   });
 });
