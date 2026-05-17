@@ -59,34 +59,30 @@ pub enum AuthError {
 
 /// Extractor for the MCP bridge's Bearer credential. Reads
 /// `Authorization: Bearer <token>` and constant-time compares against
-/// `Settings::mcp_api_key`. Returns 401 on mismatch, 503 when the
-/// server has no key configured (so the MCP surface is plainly off
-/// rather than silently accepting traffic).
+/// `Settings::mcp_api_key`. Behaviour:
+///
+/// - `mcp_api_key` set → require a matching Bearer, else 401.
+/// - `mcp_api_key` unset → let every request through without
+///   inspecting the header. Suitable for trusted-LAN deployments
+///   behind another auth layer (Wireguard, Tailscale, mTLS); a
+///   startup warning is emitted in `run_server` so the open state
+///   shows up in the logs.
 pub struct ApiKey;
 
 #[derive(Error, Debug)]
 pub enum ApiKeyError {
-    #[error("mcp api unavailable")]
-    NotConfigured,
     #[error("missing or invalid bearer token")]
     Invalid,
 }
 
 impl ResponseError for ApiKeyError {
     fn status_code(&self) -> actix_web::http::StatusCode {
-        match self {
-            ApiKeyError::NotConfigured => actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
-            ApiKeyError::Invalid => actix_web::http::StatusCode::UNAUTHORIZED,
-        }
+        actix_web::http::StatusCode::UNAUTHORIZED
     }
     fn error_response(&self) -> HttpResponse {
-        match self {
-            ApiKeyError::NotConfigured => HttpResponse::ServiceUnavailable()
-                .json(serde_json::json!({"error": self.to_string()})),
-            ApiKeyError::Invalid => HttpResponse::Unauthorized()
-                .insert_header(("WWW-Authenticate", "Bearer realm=\"chat-mcp\""))
-                .json(serde_json::json!({"error": self.to_string()})),
-        }
+        HttpResponse::Unauthorized()
+            .insert_header(("WWW-Authenticate", "Bearer realm=\"chat-mcp\""))
+            .json(serde_json::json!({"error": self.to_string()}))
     }
 }
 
@@ -104,10 +100,13 @@ impl FromRequest for ApiKey {
 
     fn from_request(req: &HttpRequest, _payload: &mut actix_web::dev::Payload) -> Self::Future {
         let Some(state) = req.app_data::<web::Data<Arc<AppState>>>() else {
-            return ready(Err(ApiKeyError::NotConfigured));
+            return ready(Err(ApiKeyError::Invalid));
         };
+        // Unset key disables auth — let every request through. Matches
+        // the chat-mcp HTTP transport's "auth off when key unset"
+        // posture so the two hops behave consistently.
         let Some(expected) = state.settings.mcp_api_key.as_deref() else {
-            return ready(Err(ApiKeyError::NotConfigured));
+            return ready(Ok(ApiKey));
         };
         let header = req
             .headers()

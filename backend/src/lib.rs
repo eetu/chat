@@ -294,6 +294,11 @@ pub async fn run_server() -> std::io::Result<()> {
     let chat_rate = settings.chat_rate_per_min;
     let auth_rate = settings.auth_rate_per_min;
     let image_concurrency = settings.image_gen_concurrency;
+    if settings.mcp_api_key.is_none() {
+        tracing::warn!(
+            "CHAT_MCP_API_KEY is unset — /api/v1/* endpoints will accept unauthenticated requests"
+        );
+    }
     let state = Arc::new(AppState {
         settings,
         http_client: reqwest::Client::new(),

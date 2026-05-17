@@ -46,10 +46,11 @@ pub struct Settings {
     /// default 1.
     pub image_gen_concurrency: usize,
     /// Shared secret for the MCP bridge's `/api/v1/*` endpoints. When
-    /// unset the routes 503 — there's no implicit fallback to the
-    /// session cookie because the agent-facing surface is intentionally
-    /// keyed off a separate credential (no per-user data isolation, no
-    /// conversation persistence). Set `CHAT_MCP_API_KEY` to enable.
+    /// set, every request must carry a matching `Authorization:
+    /// Bearer ...`. When unset the routes accept every request —
+    /// intended for trusted-LAN deployments behind another auth layer
+    /// (Wireguard, Tailscale, mTLS); `run_server` logs a startup
+    /// warning so the open state shows up in logs.
     pub mcp_api_key: Option<String>,
 }
 
