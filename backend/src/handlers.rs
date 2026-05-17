@@ -1210,6 +1210,7 @@ pub async fn chat(
                     &negative_text,
                     &base,
                     &mask_bytes,
+                    chat_shared::DEFAULT_INPAINT_STEPS,
                     cancel_fut,
                     Some(progress_cb),
                 )
@@ -1219,6 +1220,7 @@ pub async fn chat(
                     &state_clone,
                     final_prompt,
                     &kontext_inputs,
+                    chat_shared::DEFAULT_KONTEXT_STEPS,
                     cancel_fut,
                     Some(progress_cb),
                 )

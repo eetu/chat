@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod comfyui;
 pub mod handlers;
+pub mod handlers_api;
 pub mod image_kind;
 pub mod oidc;
 pub mod ollama;
@@ -215,6 +216,16 @@ pub fn create_app(
                         .route(web::post().to(handlers::transcribe)),
                 )
                 .route("/tts", web::post().to(handlers::tts)),
+        )
+        .service(
+            // /api/v1 — stateless MCP-facing image endpoints. Same
+            // JSON body cap as /api/chat (base64 image inflate factor
+            // ~33% on the wire). Bearer-auth gated by ApiKey extractor
+            // inside each handler.
+            web::scope("/api/v1")
+                .app_data(web::JsonConfig::default().limit(12 * 1024 * 1024))
+                .route("/img2img", web::post().to(handlers_api::img2img))
+                .route("/inpaint", web::post().to(handlers_api::inpaint)),
         )
         .service({
             let index_path = format!("{static_dir}/index.html");

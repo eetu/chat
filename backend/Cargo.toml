@@ -1,34 +1,36 @@
 [package]
 name = "chat-backend"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
+chat-shared = { path = "../shared" }
 actix-web = "4"
 actix-cors = "0.7"
 actix-files = "0.6"
 actix-web-lab = "0.26"
 actix-session = { version = "0.11", features = ["cookie-session"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream", "multipart"], default-features = false }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 dotenvy = "0.15"
-futures-util = "0.3"
-thiserror = "2"
-tracing = "0.1"
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 url = "2"
 hex = "0.4"
-base64 = "0.22"
+base64 = { workspace = true }
 openidconnect = "4"
 tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 tracing-actix-web = "0.7.21"
 pdf-extract = "0.10.0"
+subtle = "2"
 
 [dev-dependencies]
 wiremock = "0.6"

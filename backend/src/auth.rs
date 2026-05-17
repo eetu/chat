@@ -57,6 +57,73 @@ pub enum AuthError {
     Session,
 }
 
+/// Extractor for the MCP bridge's Bearer credential. Reads
+/// `Authorization: Bearer <token>` and constant-time compares against
+/// `Settings::mcp_api_key`. Returns 401 on mismatch, 503 when the
+/// server has no key configured (so the MCP surface is plainly off
+/// rather than silently accepting traffic).
+pub struct ApiKey;
+
+#[derive(Error, Debug)]
+pub enum ApiKeyError {
+    #[error("mcp api unavailable")]
+    NotConfigured,
+    #[error("missing or invalid bearer token")]
+    Invalid,
+}
+
+impl ResponseError for ApiKeyError {
+    fn status_code(&self) -> actix_web::http::StatusCode {
+        match self {
+            ApiKeyError::NotConfigured => actix_web::http::StatusCode::SERVICE_UNAVAILABLE,
+            ApiKeyError::Invalid => actix_web::http::StatusCode::UNAUTHORIZED,
+        }
+    }
+    fn error_response(&self) -> HttpResponse {
+        match self {
+            ApiKeyError::NotConfigured => HttpResponse::ServiceUnavailable()
+                .json(serde_json::json!({"error": self.to_string()})),
+            ApiKeyError::Invalid => HttpResponse::Unauthorized()
+                .insert_header(("WWW-Authenticate", "Bearer realm=\"chat-mcp\""))
+                .json(serde_json::json!({"error": self.to_string()})),
+        }
+    }
+}
+
+/// Constant-time byte compare. Avoids leaking key length / prefix via
+/// timing. `subtle::ConstantTimeEq` returns 0/1 in a `Choice`; we widen
+/// to bool with `into()`.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
+}
+
+impl FromRequest for ApiKey {
+    type Error = ApiKeyError;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _payload: &mut actix_web::dev::Payload) -> Self::Future {
+        let Some(state) = req.app_data::<web::Data<Arc<AppState>>>() else {
+            return ready(Err(ApiKeyError::NotConfigured));
+        };
+        let Some(expected) = state.settings.mcp_api_key.as_deref() else {
+            return ready(Err(ApiKeyError::NotConfigured));
+        };
+        let header = req
+            .headers()
+            .get(actix_web::http::header::AUTHORIZATION)
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.strip_prefix("Bearer "))
+            .map(|s| s.trim());
+        match header {
+            Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+                ready(Ok(ApiKey))
+            }
+            _ => ready(Err(ApiKeyError::Invalid)),
+        }
+    }
+}
+
 impl ResponseError for AuthError {
     fn status_code(&self) -> actix_web::http::StatusCode {
         actix_web::http::StatusCode::UNAUTHORIZED

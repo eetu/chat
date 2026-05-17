@@ -45,6 +45,12 @@ pub struct Settings {
     /// Max concurrent image-generation jobs. VRAM-bound on Apple Silicon;
     /// default 1.
     pub image_gen_concurrency: usize,
+    /// Shared secret for the MCP bridge's `/api/v1/*` endpoints. When
+    /// unset the routes 503 — there's no implicit fallback to the
+    /// session cookie because the agent-facing surface is intentionally
+    /// keyed off a separate credential (no per-user data isolation, no
+    /// conversation persistence). Set `CHAT_MCP_API_KEY` to enable.
+    pub mcp_api_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -102,6 +108,7 @@ impl Settings {
             .and_then(|v| v.parse().ok())
             .filter(|n: &usize| *n > 0)
             .unwrap_or(1);
+        let mcp_api_key = env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
 
         let oidc = match (
             env::var("OIDC_ISSUER"),
@@ -137,6 +144,7 @@ impl Settings {
             chat_rate_per_min,
             auth_rate_per_min,
             image_gen_concurrency,
+            mcp_api_key,
         }
     }
 
@@ -161,6 +169,7 @@ impl Settings {
             chat_rate_per_min: 0,
             auth_rate_per_min: 0,
             image_gen_concurrency: 1,
+            mcp_api_key: None,
         }
     }
 }

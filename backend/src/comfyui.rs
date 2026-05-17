@@ -66,7 +66,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 /// The first image's encoded latent doubles as `KSampler.latent_image`
 /// (Kontext's denoising target), matching the upstream single-image
 /// graph.
-fn build_workflow(prompt: &str, filenames: &[String], seed: u64) -> serde_json::Value {
+fn build_workflow(prompt: &str, filenames: &[String], seed: u64, steps: u32) -> serde_json::Value {
     use serde_json::json;
     let mut wf = serde_json::Map::new();
 
@@ -177,7 +177,7 @@ fn build_workflow(prompt: &str, filenames: &[String], seed: u64) -> serde_json::
             "class_type": "KSampler",
             "inputs": {
                 "seed": seed,
-                "steps": 8,
+                "steps": steps,
                 "cfg": 1.0,
                 "sampler_name": "euler",
                 "scheduler": "simple",
@@ -233,6 +233,7 @@ pub async fn generate_kontext<F>(
     state: &AppState,
     prompt: &str,
     input_images_b64: &[String],
+    steps: u32,
     cancel: F,
     on_progress: Option<ProgressCallback>,
 ) -> Result<String, ChatStreamError>
@@ -260,7 +261,7 @@ where
     // 2. Build workflow + queue + watch + poll + fetch — shared with
     // generate_inpaint via run_workflow.
     let seed: u64 = (Uuid::new_v4().as_u128() as u64) & 0x7fff_ffff_ffff_ffff;
-    let workflow = build_workflow(prompt, &filenames, seed);
+    let workflow = build_workflow(prompt, &filenames, seed, steps);
     run_workflow(
         state,
         &base,
@@ -482,6 +483,7 @@ fn build_inpaint_workflow(
     base_filename: &str,
     mask_filename: &str,
     seed: u64,
+    steps: u32,
 ) -> serde_json::Value {
     use serde_json::json;
     json!({
@@ -536,7 +538,7 @@ fn build_inpaint_workflow(
                 "negative": ["8", 1],
                 "latent_image": ["8", 2],
                 "seed": seed,
-                "steps": 20,
+                "steps": steps,
                 "cfg": 3.5,
                 "sampler_name": "euler",
                 "scheduler": "normal",
@@ -560,12 +562,14 @@ fn build_inpaint_workflow(
 /// expected to have already evicted competing Ollama models — mini's
 /// 24 GB unified memory cannot hold the Fill diffusion model alongside
 /// chat models, and free_memory() should follow on the handler side.
+#[allow(clippy::too_many_arguments)]
 pub async fn generate_inpaint<F>(
     state: &AppState,
     prompt: &str,
     negative: &str,
     base_image_b64: &str,
     mask_image_b64: &str,
+    steps: u32,
     cancel: F,
     on_progress: Option<ProgressCallback>,
 ) -> Result<String, ChatStreamError>
@@ -594,6 +598,7 @@ where
         &base_filename,
         &mask_filename,
         seed,
+        steps,
     );
     run_workflow(
         state,
@@ -843,6 +848,7 @@ mod tests {
             "chat/base.png",
             "chat/mask.png",
             42,
+            20,
         );
 
         assert_eq!(

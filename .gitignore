@@ -1,4 +1,8 @@
-# Backend
+# Rust (workspace target lives at repo root after the move to a Cargo
+# workspace; the legacy backend/target/ line is kept as a guard in
+# case `cargo` is run from inside backend/ before the workspace is
+# picked up).
+target/
 backend/target/
 backend/chat.db
 backend/chat.db-shm

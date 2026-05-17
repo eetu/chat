@@ -1,0 +1,24 @@
+[package]
+name = "chat-mcp"
+version.workspace = true
+edition.workspace = true
+description = "MCP bridge exposing chat's img2img + inpaint endpoints as MCP tools."
+
+[[bin]]
+name = "chat-mcp"
+path = "src/main.rs"
+
+[dependencies]
+chat-shared = { path = "../shared" }
+rmcp = { version = "0.8", features = ["server", "transport-io", "macros", "schemars"] }
+schemars = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+reqwest-eventsource = "0.6"
+futures-util = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
