@@ -31,12 +31,18 @@ COPY Cargo.toml Cargo.lock ./
 COPY backend/Cargo.toml backend/Cargo.toml
 COPY shared/Cargo.toml shared/Cargo.toml
 COPY mcp/Cargo.toml mcp/Cargo.toml
+# Stub sources for every workspace member. The deps build populates
+# the target/ cache for all transitive dependencies; the stubs stay
+# in place after the build so the downstream binary stages still see
+# a valid workspace even when they only overwrite their own member's
+# source. (Cargo errors with "no targets specified in the manifest"
+# if a member's declared [[bin]] / lib path doesn't exist on disk —
+# even when that member isn't being compiled.)
 RUN mkdir -p backend/src shared/src mcp/src \
     && printf 'fn main() {}\n' > backend/src/main.rs \
     && : > shared/src/lib.rs \
     && printf 'fn main() {}\n' > mcp/src/main.rs \
-    && xx-cargo build --release --workspace \
-    && rm -rf backend/src shared/src mcp/src
+    && xx-cargo build --release --workspace
 
 # --- Stage 3a: Build chat-backend ---
 FROM workspace-deps AS backend-build
@@ -44,7 +50,9 @@ ARG TARGETPLATFORM
 COPY shared/src ./shared/src
 COPY backend/src ./backend/src
 # `touch` so cargo notices the stub→real source swap. Workspace shares
-# a target dir so only the changed package rebuilds.
+# a target dir so only the changed package rebuilds. The mcp/ stub is
+# left untouched — cargo doesn't compile it for `-p chat-backend`, it
+# just has to exist for workspace discovery to succeed.
 RUN touch shared/src/lib.rs backend/src/main.rs \
     && xx-cargo build --release -p chat-backend
 
@@ -53,6 +61,9 @@ FROM workspace-deps AS mcp-build
 ARG TARGETPLATFORM
 COPY shared/src ./shared/src
 COPY mcp/src ./mcp/src
+# Same shape as backend-build: only chat-mcp + chat-shared rebuild;
+# the backend/ stub stays in place as a workspace placeholder so
+# cargo can resolve member manifests without compiling backend.
 RUN touch shared/src/lib.rs mcp/src/main.rs \
     && xx-cargo build --release -p chat-mcp
 
