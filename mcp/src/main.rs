@@ -16,6 +16,7 @@
 //! - `chat_inpaint` — Flux Fill masked repaint
 
 mod backend;
+mod transport_http;
 
 use std::sync::Arc;
 
@@ -87,7 +88,7 @@ struct InpaintArgs {
 /// MCP tool handler. Holds the resolved backend config so each tool
 /// call doesn't re-read env on every invocation.
 #[derive(Clone)]
-struct ChatImageTools {
+pub struct ChatImageTools {
     backend: Arc<BackendConfig>,
     tool_router: ToolRouter<ChatImageTools>,
 }
@@ -285,11 +286,27 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to load backend config from environment")?;
     tracing::info!("connecting to chat backend at {}", backend.base_url);
 
+    let transport = std::env::var("CHAT_MCP_TRANSPORT").unwrap_or_else(|_| "stdio".into());
     let server = ChatImageTools::new(backend);
-    let running = server
-        .serve(stdio())
-        .await
-        .context("rmcp serve(stdio) failed")?;
-    running.waiting().await.context("rmcp service ended")?;
+
+    match transport.as_str() {
+        "stdio" => {
+            let running = server
+                .serve(stdio())
+                .await
+                .context("rmcp serve(stdio) failed")?;
+            running.waiting().await.context("rmcp service ended")?;
+        }
+        "http" => {
+            let cfg = transport_http::HttpConfig::from_env()
+                .context("invalid http transport config")?;
+            transport_http::serve(server, cfg)
+                .await
+                .context("http transport exited with error")?;
+        }
+        other => anyhow::bail!(
+            "unknown CHAT_MCP_TRANSPORT={other:?}; expected `stdio` or `http`"
+        ),
+    }
     Ok(())
 }

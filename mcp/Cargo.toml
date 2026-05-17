@@ -10,7 +10,10 @@ path = "src/main.rs"
 
 [dependencies]
 chat-shared = { path = "../shared" }
-rmcp = { version = "0.8", features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "0.8", features = ["server", "transport-io", "transport-streamable-http-server", "macros", "schemars"] }
+axum = "0.8"
+tower = "0.5"
+subtle = "2"
 schemars = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }

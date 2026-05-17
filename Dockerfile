@@ -79,12 +79,15 @@ CMD ["./chat-backend"]
 
 # --- Stage 4b: chat-mcp runtime ---
 #
-# Stdio MCP server: no port, no static assets. The MCP client owns
-# stdin/stdout, so the container is expected to be launched
-# interactively (`docker run -i --rm ... ghcr.io/.../chat-mcp`).
-# CHAT_BACKEND_URL and CHAT_MCP_API_KEY must be supplied at run time;
-# the container has no defaults because there's no sensible localhost
-# fallback when running in a separate container.
+# Default transport is HTTP — the container model fits a long-running
+# remote MCP server better than per-call subprocesses. Override to
+# `stdio` (and run with `docker run -i --rm ...`) when the MCP client
+# wants to spawn the container as a subprocess instead.
+#
+# Required at run time:
+#   - CHAT_BACKEND_URL (e.g. https://chat.example.com)
+#   - CHAT_MCP_API_KEY (mcp→backend auth, matches the backend's value)
+#   - CHAT_MCP_SERVER_KEY (client→mcp Bearer, only used when transport=http)
 FROM scratch AS mcp-runner
 WORKDIR /app
 LABEL org.opencontainers.image.description="chat-mcp — MCP bridge for chat's img2img / inpaint endpoints"
@@ -93,6 +96,11 @@ LABEL org.opencontainers.image.source="https://github.com/eetu/chat"
 COPY --from=mcp-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=mcp-build /app/target/*/release/chat-mcp ./chat-mcp
 
+ENV CHAT_MCP_TRANSPORT=http
+ENV PORT=8090
+
 USER 1000
+
+EXPOSE 8090
 
 ENTRYPOINT ["./chat-mcp"]
