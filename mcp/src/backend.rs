@@ -36,8 +36,6 @@ pub enum BackendEvent {
 pub enum BackendError {
     #[error("missing CHAT_BACKEND_URL env var")]
     NoUrl,
-    #[error("missing CHAT_MCP_API_KEY env var")]
-    NoKey,
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
     #[error("backend status {status}: {body}")]
@@ -53,7 +51,12 @@ pub enum BackendError {
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
     pub base_url: String,
-    pub api_key: String,
+    /// mcp→backend Bearer. Optional — the backend's `/api/v1/*`
+    /// extractor also treats an unset `CHAT_MCP_API_KEY` as
+    /// auth-disabled, so the two hops are consistent. When set we
+    /// attach `Authorization: Bearer <key>` to every request; when
+    /// unset we skip the header entirely.
+    pub api_key: Option<String>,
     pub client: Client,
 }
 
@@ -63,8 +66,10 @@ impl BackendConfig {
             .map_err(|_| BackendError::NoUrl)?
             .trim_end_matches('/')
             .to_string();
-        let api_key = std::env::var("CHAT_MCP_API_KEY")
-            .map_err(|_| BackendError::NoKey)?;
+        // Unset or empty key = auth-off mode. Backend's ApiKey
+        // extractor mirrors this, so the bearer header is harmless
+        // when omitted on both ends.
+        let api_key = std::env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
         // Long-running SSE: rely on reqwest's default (no timeout).
         // Don't call `.timeout(...)` here — a zero-duration value
         // would mean *immediate* timeout, not unbounded.
@@ -102,11 +107,10 @@ impl BackendConfig {
         body: &B,
         tx: mpsc::Sender<BackendEvent>,
     ) -> Result<(), BackendError> {
-        let req = self
-            .client
-            .post(url)
-            .bearer_auth(&self.api_key)
-            .json(body);
+        let mut req = self.client.post(url).json(body);
+        if let Some(key) = &self.api_key {
+            req = req.bearer_auth(key);
+        }
         let mut es = EventSource::new(req)
             .map_err(|e| BackendError::Sse(e.to_string()))?;
 

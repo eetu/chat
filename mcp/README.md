@@ -28,7 +28,7 @@ description — the agent can pick a value when the user asks for
 | Env var | Required | Default | Purpose |
 |---|---|---|---|
 | `CHAT_BACKEND_URL` | yes | — | Chat backend base URL, e.g. `https://chat.example.com`. Points at the backend, *not* ComfyUI. |
-| `CHAT_MCP_API_KEY` | yes | — | mcp→backend Bearer. Must match `CHAT_MCP_API_KEY` set on the backend. |
+| `CHAT_MCP_API_KEY` | no | — | mcp→backend Bearer. Must match `CHAT_MCP_API_KEY` on the backend. **Unset or empty omits the header entirely**, which works only if the backend is also running with the key unset (auth-off mode). |
 | `CHAT_MCP_TRANSPORT` | no | `stdio` (binary) / `http` (container) | `stdio` or `http`. |
 | `CHAT_MCP_SERVER_KEY` | no | — | client→mcp Bearer in HTTP mode. **Unset or empty disables the auth middleware** — the listener accepts every request. Set when exposing beyond a trusted LAN. |
 | `PORT` | no | `8090` | HTTP listen port. |
