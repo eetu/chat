@@ -1082,6 +1082,22 @@ fn migrate_attachments_to_blobs(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+pub fn start_ttl_loop(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let interval = Duration::from_secs(3600);
+        loop {
+            tokio::time::sleep(interval).await;
+            match state.storage.purge_older_than(state.settings.chat_ttl_days) {
+                Ok(n) if n > 0 => {
+                    tracing::info!("ttl sweep: removed {n} conversations");
+                }
+                Ok(_) => {}
+                Err(e) => tracing::error!("ttl sweep failed: {e}"),
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1464,20 +1480,4 @@ mod tests {
         let err = s.get_conversation("a", "no-such-id").unwrap_err();
         assert!(matches!(err, StorageError::NotFound));
     }
-}
-
-pub fn start_ttl_loop(state: Arc<AppState>) {
-    tokio::spawn(async move {
-        let interval = Duration::from_secs(3600);
-        loop {
-            tokio::time::sleep(interval).await;
-            match state.storage.purge_older_than(state.settings.chat_ttl_days) {
-                Ok(n) if n > 0 => {
-                    tracing::info!("ttl sweep: removed {n} conversations");
-                }
-                Ok(_) => {}
-                Err(e) => tracing::error!("ttl sweep failed: {e}"),
-            }
-        }
-    });
 }

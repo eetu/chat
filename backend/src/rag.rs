@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn embedding_roundtrip() {
-        let v = vec![0.1f32, -2.5, 3.14, 1e-3];
+        let v = vec![0.1f32, -2.5, 3.25, 1e-3];
         let bytes = embedding_to_bytes(&v);
         let back = embedding_from_bytes(&bytes);
         assert_eq!(v.len(), back.len());
