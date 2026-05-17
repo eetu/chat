@@ -37,7 +37,13 @@ use crate::ChatImageTools;
 #[derive(Debug, Clone)]
 pub struct HttpConfig {
     pub bind: SocketAddr,
-    pub server_key: String,
+    /// Optional client-facing Bearer token. `None` disables the auth
+    /// middleware entirely — the `/mcp` mount is reachable by anyone
+    /// who can hit the bind address. Intended for trusted LAN
+    /// deployments behind another auth layer (or `127.0.0.1` binds);
+    /// a startup warning is logged so accidental public exposure
+    /// surfaces in the logs.
+    pub server_key: Option<String>,
     /// Path the MCP service is mounted at. `/mcp` is the
     /// streamable-HTTP convention.
     pub mount_path: String,
@@ -53,11 +59,13 @@ impl HttpConfig {
         let bind: SocketAddr = format!("{bind_host}:{port}")
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid bind {bind_host}:{port}: {e}"))?;
+        // Auth is opt-in via env presence: unset or empty
+        // `CHAT_MCP_SERVER_KEY` disables the Bearer middleware. An
+        // empty string is treated the same as missing so deployment
+        // tooling doesn't accidentally enable auth with a blank value.
         let server_key = std::env::var("CHAT_MCP_SERVER_KEY")
-            .map_err(|_| anyhow::anyhow!("CHAT_MCP_SERVER_KEY is required when CHAT_MCP_TRANSPORT=http"))?;
-        if server_key.is_empty() {
-            anyhow::bail!("CHAT_MCP_SERVER_KEY must not be empty");
-        }
+            .ok()
+            .filter(|s| !s.is_empty());
         let mount_path = std::env::var("CHAT_MCP_MOUNT_PATH").unwrap_or_else(|_| "/mcp".into());
         Ok(Self {
             bind,
@@ -132,27 +140,34 @@ pub async fn serve(tools: ChatImageTools, cfg: HttpConfig) -> anyhow::Result<()>
         StreamableHttpServerConfig::default(),
     );
 
-    let auth_state = AuthState {
-        expected: Arc::new(cfg.server_key.clone()),
-    };
-
-    let mcp_router = Router::new()
-        .route_service(&cfg.mount_path, any_service(mcp_service))
-        .layer(
+    let mut mcp_router = Router::new().route_service(&cfg.mount_path, any_service(mcp_service));
+    let auth_enabled = if let Some(key) = cfg.server_key.clone() {
+        let auth_state = AuthState {
+            expected: Arc::new(key),
+        };
+        mcp_router = mcp_router.layer(
             ServiceBuilder::new().layer(middleware::from_fn_with_state(
                 auth_state,
                 require_bearer,
             )),
         );
+        true
+    } else {
+        tracing::warn!(
+            "CHAT_MCP_SERVER_KEY is unset — http transport will accept unauthenticated MCP requests"
+        );
+        false
+    };
 
     let app = Router::new()
         .route("/health", get(health))
         .merge(mcp_router);
 
     tracing::info!(
-        "chat-mcp http transport listening on {} (mount={})",
+        "chat-mcp http transport listening on {} (mount={}, auth={})",
         cfg.bind,
-        cfg.mount_path
+        cfg.mount_path,
+        if auth_enabled { "bearer" } else { "off" },
     );
     let listener = tokio::net::TcpListener::bind(cfg.bind).await?;
     axum::serve(listener, app).await?;

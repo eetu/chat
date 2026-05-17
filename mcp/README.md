@@ -30,7 +30,7 @@ description — the agent can pick a value when the user asks for
 | `CHAT_BACKEND_URL` | yes | — | Chat backend base URL, e.g. `https://chat.example.com`. Points at the backend, *not* ComfyUI. |
 | `CHAT_MCP_API_KEY` | yes | — | mcp→backend Bearer. Must match `CHAT_MCP_API_KEY` set on the backend. |
 | `CHAT_MCP_TRANSPORT` | no | `stdio` (binary) / `http` (container) | `stdio` or `http`. |
-| `CHAT_MCP_SERVER_KEY` | when `http` | — | client→mcp Bearer. Required only in HTTP mode. |
+| `CHAT_MCP_SERVER_KEY` | no | — | client→mcp Bearer in HTTP mode. **Unset or empty disables the auth middleware** — the listener accepts every request. Set when exposing beyond a trusted LAN. |
 | `PORT` | no | `8090` | HTTP listen port. |
 | `CHAT_MCP_BIND` | no | `0.0.0.0` | HTTP listen address. |
 | `CHAT_MCP_MOUNT_PATH` | no | `/mcp` | HTTP mount path for the MCP service. |
@@ -40,6 +40,12 @@ Two keys, two trust boundaries: `CHAT_MCP_SERVER_KEY` gates *clients*
 hitting this server; `CHAT_MCP_API_KEY` gates *this server* hitting
 the chat backend. They can be the same value if you don't care about
 the isolation, but separating them costs nothing.
+
+Leaving `CHAT_MCP_SERVER_KEY` unset turns off the client-side auth
+middleware entirely — useful for LAN-only deployments behind another
+auth layer (Tailscale, mTLS at the reverse proxy, `127.0.0.1` bind).
+The server logs a startup warning when it boots without a key, and
+the `auth=off` marker shows up in the listening-on log line.
 
 ## Build
 
@@ -230,6 +236,9 @@ GPU cycles on a render nobody will see.
 - `CHAT_MCP_SERVER_KEY` must be long and random (≥ 32 bytes). The
   server uses constant-time compare to prevent length-leak timing
   attacks but a short key is still trivial to brute-force.
+- Leaving `CHAT_MCP_SERVER_KEY` unset disables client auth and prints
+  a `WARN` line at startup. Safe for `127.0.0.1`-bind or trusted-LAN
+  deployments; do not combine with a public bind.
 - The container runs as UID 1000; SQLite / file mounts on the
   backend container have no analogue here — chat-mcp is stateless.
 - The MCP server does not currently rate-limit. Concurrency is bounded
