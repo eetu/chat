@@ -99,6 +99,12 @@ CMD ["./chat-backend"]
 #   - CHAT_BACKEND_URL (e.g. https://chat.example.com)
 #   - CHAT_MCP_API_KEY (mcp→backend auth, matches the backend's value)
 #   - CHAT_MCP_SERVER_KEY (client→mcp Bearer, only used when transport=http)
+# Optional:
+#   - CHAT_BACKEND_PUBLIC_URL (user-facing URL the chat backend is
+#     reachable at; defaults to CHAT_BACKEND_URL. Set this when the
+#     internal URL is a container-network hostname users can't hit
+#     directly — the mcp tools embed this URL in their results so a
+#     user can curl / open the rendered image.)
 FROM scratch AS mcp-runner
 WORKDIR /app
 LABEL org.opencontainers.image.description="chat-mcp — MCP bridge for chat's img2img / inpaint endpoints"

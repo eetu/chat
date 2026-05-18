@@ -82,10 +82,16 @@ pub struct InpaintRequest {
     pub steps: Option<u32>,
 }
 
-/// Final SSE `done` event payload — the rendered PNG as base64.
+/// Final SSE `done` event payload. Contains the rendered PNG as
+/// base64 (for callers that want the bytes inline) and the `uuid` it
+/// was stored under in the backend's short-lived image buffer
+/// (`GET /api/v1/images/{uuid}.png`). Callers that route through the
+/// MCP bridge typically read `uuid` only and skip `image_b64` to
+/// keep the LLM context lean.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageResponse {
     pub image_b64: String,
+    pub uuid: String,
 }
 
 /// SSE `progress` event payload. `value` reaches `max` at completion.

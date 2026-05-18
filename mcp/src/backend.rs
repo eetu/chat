@@ -50,7 +50,14 @@ pub enum BackendError {
 /// in one struct makes the tool handlers trivially testable later.
 #[derive(Debug, Clone)]
 pub struct BackendConfig {
+    /// Internal URL used by chat-mcp itself when calling
+    /// `/api/v1/*` — usually a container-network or LAN hostname.
     pub base_url: String,
+    /// Externally-routable URL the *user* would hit to fetch a
+    /// stored image (e.g. `https://chat.example.com`). Defaults to
+    /// `base_url` when `CHAT_BACKEND_PUBLIC_URL` is unset, which is
+    /// correct for local dev where the two are the same host.
+    pub public_url: String,
     /// mcp→backend Bearer. Optional — the backend's `/api/v1/*`
     /// extractor also treats an unset `CHAT_MCP_API_KEY` as
     /// auth-disabled, so the two hops are consistent. When set we
@@ -66,6 +73,11 @@ impl BackendConfig {
             .map_err(|_| BackendError::NoUrl)?
             .trim_end_matches('/')
             .to_string();
+        let public_url = std::env::var("CHAT_BACKEND_PUBLIC_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| base_url.clone());
         // Unset or empty key = auth-off mode. Backend's ApiKey
         // extractor mirrors this, so the bearer header is harmless
         // when omitted on both ends.
@@ -76,9 +88,18 @@ impl BackendConfig {
         let client = Client::builder().build()?;
         Ok(Self {
             base_url,
+            public_url,
             api_key,
             client,
         })
+    }
+
+    /// Build the externally-routable URL for a stored image so the
+    /// MCP tool can hand the user something they can `curl` or open
+    /// in a browser. Bears no relation to `base_url` once
+    /// `CHAT_BACKEND_PUBLIC_URL` diverges.
+    pub fn image_url(&self, uuid: &str) -> String {
+        format!("{}/api/v1/images/{}.png", self.public_url, uuid)
     }
 
     /// POST `/api/v1/txt2img` and pump SSE events into `tx`.

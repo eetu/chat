@@ -27,11 +27,38 @@ when the user asks for "fast preview" vs "really good quality".
 `chat_txt2img` has no steps knob; Ollama's image surface doesn't
 expose sampler controls.
 
+### Tool output shape
+
+By default the rendered image is **not** returned inline as base64.
+Each render is stashed in the backend's 30-minute in-memory image
+buffer; the tool result contains:
+
+1. `Content::text("Image saved at <url> (expires in ~30 min).")`
+2. `Content::resource_link(uri=<url>, mimeType=image/png)`
+
+The user can `curl -O <url>` to save the PNG, or click in MCP clients
+that render `resource_link` as an actionable item (Claude Desktop).
+Since the bytes never enter the LLM's context, a 1024² PNG costs
+~80 tokens instead of ~700K.
+
+Pass `inline: true` on any of the three generation tools to also
+include the base64 image content block when the agent needs to
+*see* the result (chained edits, visual critique). The fetch URL
+is still emitted alongside.
+
+Backend storage knobs (set on the *backend* container, not chat-mcp):
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CHAT_IMAGE_BUFFER_TTL_SECS` | `1800` | How long renders live before sweep drops them. |
+| `CHAT_IMAGE_BUFFER_LIMIT` | `64` | Max entries before oldest is evicted on insert. |
+
 ## Configuration
 
 | Env var | Required | Default | Purpose |
 |---|---|---|---|
-| `CHAT_BACKEND_URL` | yes | — | Chat backend base URL, e.g. `https://chat.example.com`. Points at the backend, *not* ComfyUI. |
+| `CHAT_BACKEND_URL` | yes | — | Chat backend base URL used by chat-mcp itself, e.g. `http://chat-backend:8080`. Points at the backend, *not* ComfyUI. Typically a container/LAN hostname. |
+| `CHAT_BACKEND_PUBLIC_URL` | no | falls back to `CHAT_BACKEND_URL` | Externally-routable URL the *user* would hit to fetch a rendered image, e.g. `https://chat.example.com`. The mcp tools embed this in their results so the user can `curl` / open it in a browser. Only relevant when the public URL differs from the internal one. |
 | `CHAT_MCP_API_KEY` | no | — | mcp→backend Bearer. Must match `CHAT_MCP_API_KEY` on the backend. **Unset or empty omits the header entirely**, which works only if the backend is also running with the key unset (auth-off mode). |
 | `CHAT_MCP_TRANSPORT` | no | `stdio` (binary) / `http` (container) | `stdio` or `http`. |
 | `CHAT_MCP_SERVER_KEY` | no | — | client→mcp Bearer in HTTP mode. **Unset or empty disables the auth middleware** — the listener accepts every request. Set when exposing beyond a trusted LAN. |

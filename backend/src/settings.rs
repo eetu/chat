@@ -45,6 +45,15 @@ pub struct Settings {
     /// Max concurrent image-generation jobs. VRAM-bound on Apple Silicon;
     /// default 1.
     pub image_gen_concurrency: usize,
+    /// How long a generated image stays in the in-memory buffer
+    /// served by `GET /api/v1/images/{uuid}.png`. Tuned for "agent
+    /// renders, user reviews, user saves" workflows; 30 min is long
+    /// enough for a slow review without pinning megabytes forever.
+    pub image_buffer_ttl_secs: u64,
+    /// Cap on how many images live in the buffer at once. When full,
+    /// the oldest entry is evicted on insert. Each entry is roughly
+    /// 0.5–2 MB, so default 64 caps memory around 128 MB worst case.
+    pub image_buffer_limit: usize,
     /// Shared secret for the MCP bridge's `/api/v1/*` endpoints. When
     /// set, every request must carry a matching `Authorization:
     /// Bearer ...`. When unset the routes accept every request —
@@ -110,6 +119,16 @@ impl Settings {
             .filter(|n: &usize| *n > 0)
             .unwrap_or(1);
         let mcp_api_key = env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
+        let image_buffer_ttl_secs = env::var("CHAT_IMAGE_BUFFER_TTL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &u64| *n > 0)
+            .unwrap_or(1800);
+        let image_buffer_limit = env::var("CHAT_IMAGE_BUFFER_LIMIT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(64);
 
         let oidc = match (
             env::var("OIDC_ISSUER"),
@@ -146,6 +165,8 @@ impl Settings {
             auth_rate_per_min,
             image_gen_concurrency,
             mcp_api_key,
+            image_buffer_ttl_secs,
+            image_buffer_limit,
         }
     }
 
@@ -171,6 +192,8 @@ impl Settings {
             auth_rate_per_min: 0,
             image_gen_concurrency: 1,
             mcp_api_key: None,
+            image_buffer_ttl_secs: 1800,
+            image_buffer_limit: 64,
         }
     }
 }

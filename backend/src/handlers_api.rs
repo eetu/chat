@@ -23,6 +23,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_web::{web, HttpResponse};
 use actix_web_lab::sse;
@@ -38,6 +39,7 @@ use crate::auth::ApiKey;
 use crate::comfyui;
 use crate::ollama::{self, ChatStreamError};
 use crate::AppState;
+use uuid::Uuid;
 
 /// SSE channel depth. Large enough to absorb a burst of preview frames
 /// without dropping when the consumer is slow but small enough that a
@@ -147,10 +149,21 @@ pub async fn txt2img(
         };
         match result {
             Ok(image_b64) => {
+                let uuid = state_clone
+                    .image_buffer
+                    .insert(&image_b64, state_clone.settings.image_buffer_limit)
+                    .await
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|e| {
+                        tracing::warn!(
+                            "image buffer insert failed (returning inline only): {e}"
+                        );
+                        String::new()
+                    });
                 let _ = tx
                     .send(Ok(ollama::sse_json(
                         "done",
-                        &serde_json::to_value(ImageResponse { image_b64 })
+                        &serde_json::to_value(ImageResponse { image_b64, uuid })
                             .unwrap_or_default(),
                     )))
                     .await;
@@ -179,6 +192,39 @@ pub async fn txt2img(
     });
 
     Ok(sse_stream(rx))
+}
+
+/// GET /api/v1/images/{uuid}.png
+///
+/// Streams the bytes of a previously-rendered image from the in-memory
+/// buffer. The `.png` suffix is cosmetic — it makes the URL look like
+/// a file when curl'd into `-O`, but the lookup ignores it.
+///
+/// 404 on unknown / expired ids. The blob's TTL is set by
+/// `CHAT_IMAGE_BUFFER_TTL_SECS` (default 30 min).
+pub async fn get_image(
+    state: web::Data<Arc<AppState>>,
+    _auth: ApiKey,
+    path: web::Path<String>,
+) -> HttpResponse {
+    let raw = path.into_inner();
+    // Tolerate `<uuid>.png` and bare `<uuid>` — the extension is for
+    // URL aesthetics and tools that infer mime from filename.
+    let id_str = raw.strip_suffix(".png").unwrap_or(&raw);
+    let Ok(id) = Uuid::parse_str(id_str) else {
+        return HttpResponse::NotFound().finish();
+    };
+    let ttl = Duration::from_secs(state.settings.image_buffer_ttl_secs);
+    match state.image_buffer.get(id, ttl).await {
+        Some(blob) => HttpResponse::Ok()
+            .content_type(blob.mime)
+            .insert_header((
+                "Cache-Control",
+                "private, max-age=300, must-revalidate",
+            ))
+            .body(blob.bytes),
+        None => HttpResponse::NotFound().finish(),
+    }
 }
 
 /// GET /api/v1/models/image
@@ -377,7 +423,23 @@ async fn finish(
 ) {
     match result {
         Ok(image_b64) => {
-            let body = ImageResponse { image_b64 };
+            // Stash the rendered PNG in the in-memory buffer so the
+            // caller can fetch it via GET /api/v1/images/{uuid}.png
+            // instead of inlining the base64 in their context.
+            let uuid = match state
+                .image_buffer
+                .insert(&image_b64, state.settings.image_buffer_limit)
+                .await
+            {
+                Ok(id) => id.to_string(),
+                Err(e) => {
+                    tracing::warn!(
+                        "image buffer insert failed (returning inline only): {e}"
+                    );
+                    String::new()
+                }
+            };
+            let body = ImageResponse { image_b64, uuid };
             let _ = tx
                 .send(Ok(ollama::sse_json(
                     "done",

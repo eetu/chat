@@ -2,6 +2,7 @@ pub mod auth;
 pub mod comfyui;
 pub mod handlers;
 pub mod handlers_api;
+pub mod image_buffer;
 pub mod image_kind;
 pub mod oidc;
 pub mod ollama;
@@ -89,6 +90,10 @@ pub struct AppState {
     /// gates concurrent ComfyUI / Ollama image jobs so VRAM-bound hosts
     /// don't OOM when multiple users send at once.
     pub image_sem: Arc<Semaphore>,
+    /// Short-lived cache of rendered PNGs served via
+    /// `GET /api/v1/images/{uuid}.png`. Bypasses the LLM context for
+    /// MCP-driven flows — see `image_buffer.rs`.
+    pub image_buffer: image_buffer::ImageBuffer,
     /// Coarse cache of "does Ollama have at least one embedding-capable
     /// model?" so `/status` doesn't walk every model on every poll.
     pub embed_models_available: Mutex<Option<(Instant, bool)>>,
@@ -157,7 +162,8 @@ pub fn create_app(
                 .route("/txt2img", web::post().to(handlers_api::txt2img))
                 .route("/img2img", web::post().to(handlers_api::img2img))
                 .route("/inpaint", web::post().to(handlers_api::inpaint))
-                .route("/models/image", web::get().to(handlers_api::list_image_models)),
+                .route("/models/image", web::get().to(handlers_api::list_image_models))
+                .route("/images/{id}", web::get().to(handlers_api::get_image)),
         )
         .service(
             web::scope("/api")
@@ -316,6 +322,7 @@ pub async fn run_server() -> std::io::Result<()> {
         chat_limit: RateLimiter::per_minute(chat_rate),
         auth_limit: RateLimiter::per_minute(auth_rate),
         image_sem: Arc::new(Semaphore::new(image_concurrency)),
+        image_buffer: image_buffer::ImageBuffer::new(),
         embed_models_available: Mutex::new(None),
     });
 
@@ -329,6 +336,7 @@ pub async fn run_server() -> std::io::Result<()> {
     }
 
     storage::start_ttl_loop(state.clone());
+    image_buffer::start_sweep_loop(state.clone());
 
     tracing::info!("starting chat server on port {port}");
 
@@ -350,6 +358,7 @@ pub fn create_test_state() -> Arc<AppState> {
         chat_limit: RateLimiter::per_minute(0),
         auth_limit: RateLimiter::per_minute(0),
         image_sem: Arc::new(Semaphore::new(1)),
+        image_buffer: image_buffer::ImageBuffer::new(),
         embed_models_available: Mutex::new(None),
     })
 }

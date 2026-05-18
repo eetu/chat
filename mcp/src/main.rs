@@ -29,7 +29,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{
         CallToolResult, Content, ErrorData, Implementation, ProgressNotificationParam,
-        ProgressToken, ProtocolVersion, ServerCapabilities, ServerInfo,
+        ProgressToken, ProtocolVersion, RawResource, ServerCapabilities, ServerInfo,
     },
     service::RequestContext,
     tool, tool_handler, tool_router,
@@ -56,6 +56,9 @@ struct Txt2ImgArgs {
     /// first to discover what's installed.
     #[serde(default)]
     model: Option<String>,
+    /// See `Img2ImgArgs::inline`. Default false — return URL only.
+    #[serde(default)]
+    inline: bool,
 }
 
 /// Parameters for `chat_img2img`. Field docs flow into the JSON
@@ -79,6 +82,15 @@ struct Img2ImgArgs {
     /// end. Defaults to 8 (balanced).
     #[serde(default)]
     steps: Option<u32>,
+    /// When `true`, the tool result includes the rendered PNG inline
+    /// as a base64 image content block so the model can reason about
+    /// it (for chained edits, visual critique, etc.). Default is
+    /// `false`: only a fetch URL is returned, which keeps the bytes
+    /// out of the LLM context. Set to `true` only when the agent
+    /// needs to *see* the result; the user can save it from the URL
+    /// regardless.
+    #[serde(default)]
+    inline: bool,
 }
 
 /// Parameters for `chat_inpaint`. See `Img2ImgArgs` for schema notes.
@@ -101,6 +113,9 @@ struct InpaintArgs {
     /// (balanced).
     #[serde(default)]
     steps: Option<u32>,
+    /// See `Img2ImgArgs::inline`. Default false — return URL only.
+    #[serde(default)]
+    inline: bool,
 }
 
 /// MCP tool handler. Holds the resolved backend config so each tool
@@ -154,7 +169,7 @@ No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical 
             prompt: args.prompt,
             model: args.model,
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body)).await
+        run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body), args.inline).await
     }
 
     #[tool(
@@ -182,7 +197,7 @@ Returns a single image content block (image/png, base64)."
             images: args.images,
             steps: Some(args.steps.unwrap_or(DEFAULT_KONTEXT_STEPS).clamp(MIN_STEPS, MAX_KONTEXT_STEPS)),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Img2Img(body)).await
+        run_tool(self.backend.clone(), ctx, BackendJob::Img2Img(body), args.inline).await
     }
 
     #[tool(
@@ -214,7 +229,7 @@ Returns a single image content block (image/png, base64)."
             negative_prompt: args.negative_prompt,
             steps: Some(args.steps.unwrap_or(DEFAULT_INPAINT_STEPS).clamp(MIN_STEPS, MAX_INPAINT_STEPS)),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Inpaint(body)).await
+        run_tool(self.backend.clone(), ctx, BackendJob::Inpaint(body), args.inline).await
     }
 }
 
@@ -253,6 +268,7 @@ async fn run_tool(
     backend: Arc<BackendConfig>,
     ctx: RequestContext<RoleServer>,
     job: BackendJob,
+    inline: bool,
 ) -> Result<CallToolResult, ErrorData> {
     let progress_token: Option<ProgressToken> = ctx.meta.get_progress_token();
     let peer = ctx.peer.clone();
@@ -267,7 +283,8 @@ async fn run_tool(
         }
     });
 
-    let mut final_image: Option<String> = None;
+    let mut final_b64: Option<String> = None;
+    let mut final_uuid: Option<String> = None;
     let mut final_error: Option<String> = None;
 
     while let Some(evt) = rx.recv().await {
@@ -293,7 +310,12 @@ async fn run_tool(
                 // the final image is what matters.
             }
             BackendEvent::Done(img) => {
-                final_image = Some(img.image_b64);
+                final_uuid = if img.uuid.is_empty() {
+                    None
+                } else {
+                    Some(img.uuid)
+                };
+                final_b64 = Some(img.image_b64);
             }
             BackendEvent::Error(e) => {
                 final_error = Some(e.message);
@@ -307,11 +329,8 @@ async fn run_tool(
         Err(backend::BackendError::Sse(format!("join: {e}")))
     });
 
-    match (final_image, final_error, pump_result) {
-        (Some(b64), _, _) => Ok(CallToolResult::success(vec![Content::image(
-            b64,
-            "image/png",
-        )])),
+    match (final_b64, final_error, pump_result) {
+        (Some(b64), _, _) => Ok(success_result(&backend, &b64, final_uuid.as_deref(), inline)),
         (None, Some(msg), _) => Ok(CallToolResult::error(vec![Content::text(msg)])),
         (None, None, Err(e)) => Ok(CallToolResult::error(vec![Content::text(
             e.to_string(),
@@ -320,6 +339,52 @@ async fn run_tool(
             "backend stream ended without a result",
         )])),
     }
+}
+
+/// Build the `CallToolResult` content vec for a successful render.
+///
+/// Default shape (`inline=false`):
+///   - `Content::text(url)` — human-/curl-friendly. Always emitted
+///     when the backend stored the image (i.e. `uuid` is non-empty).
+///   - `Content::resource_link(uri=url)` — spec-native hint for MCP
+///     clients that render resource links as actionable items
+///     (Claude Desktop "Open" button etc.).
+///   - The base64 image is *not* included, so the bytes never enter
+///     the LLM's context window.
+///
+/// `inline=true` adds `Content::image(b64, "image/png")` on top so
+/// the model can reason about the render directly.
+///
+/// Fallback: if the backend failed to store the blob (`uuid` empty),
+/// we always include the inline image — otherwise the agent would
+/// get nothing back.
+fn success_result(
+    backend: &BackendConfig,
+    b64: &str,
+    uuid: Option<&str>,
+    inline: bool,
+) -> CallToolResult {
+    let mut content = Vec::with_capacity(3);
+    let stored = uuid.is_some();
+    if let Some(uuid) = uuid {
+        let url = backend.image_url(uuid);
+        content.push(Content::text(format!(
+            "Image saved at {url} (expires in ~30 min)."
+        )));
+        content.push(Content::resource_link(RawResource {
+            uri: url,
+            name: format!("{uuid}.png"),
+            title: None,
+            description: Some("Rendered image".into()),
+            mime_type: Some("image/png".into()),
+            size: None,
+            icons: None,
+        }));
+    }
+    if inline || !stored {
+        content.push(Content::image(b64.to_string(), "image/png"));
+    }
+    CallToolResult::success(content)
 }
 
 async fn notify_progress(

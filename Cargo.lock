@@ -653,6 +653,7 @@ dependencies = [
  "actix-web",
  "actix-web-lab",
  "base64 0.22.1",
+ "bytes",
  "chat-shared",
  "chrono",
  "dotenvy",
