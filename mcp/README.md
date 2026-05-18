@@ -16,12 +16,16 @@ Two transports are supported in the same binary:
 
 | Name | Backend | Description |
 |---|---|---|
-| `chat_img2img` | Flux Kontext | Edit one or more reference images using a natural-language prompt. |
-| `chat_inpaint` | Flux Fill | Repaint a masked region of an image; uses real CFG so negative prompts matter. |
+| `chat_list_image_models` | Ollama | Discover which models the backend exposes for `chat_txt2img`. |
+| `chat_txt2img` | Ollama | Generate a fresh image from a text prompt. Pick a model from the list tool. |
+| `chat_img2img` | Flux Kontext (ComfyUI) | Edit one or more reference images using a natural-language prompt. |
+| `chat_inpaint` | Flux Fill (ComfyUI) | Repaint a masked region of an image; uses real CFG so negative prompts matter. |
 
-Both tools document a quality/speed knob (`steps`) in their tool
-description — the agent can pick a value when the user asks for
-"fast preview" vs "really good quality".
+`chat_img2img` and `chat_inpaint` both expose a quality/speed knob
+(`steps`) in their tool description — the agent can pick a value
+when the user asks for "fast preview" vs "really good quality".
+`chat_txt2img` has no steps knob; Ollama's image surface doesn't
+expose sampler controls.
 
 ## Configuration
 

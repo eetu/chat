@@ -224,8 +224,10 @@ pub fn create_app(
             // inside each handler.
             web::scope("/api/v1")
                 .app_data(web::JsonConfig::default().limit(12 * 1024 * 1024))
+                .route("/txt2img", web::post().to(handlers_api::txt2img))
                 .route("/img2img", web::post().to(handlers_api::img2img))
-                .route("/inpaint", web::post().to(handlers_api::inpaint)),
+                .route("/inpaint", web::post().to(handlers_api::inpaint))
+                .route("/models/image", web::get().to(handlers_api::list_image_models)),
         )
         .service({
             let index_path = format!("{static_dir}/index.html");

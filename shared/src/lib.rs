@@ -21,6 +21,35 @@ pub const MIN_STEPS: u32 = 4;
 pub const MAX_KONTEXT_STEPS: u32 = 20;
 pub const MAX_INPAINT_STEPS: u32 = 40;
 
+/// Body for `POST /api/v1/txt2img`. Pure text-to-image generation
+/// via Ollama's `/v1/images/generations` endpoint. No reference
+/// images, no mask, no sampler steps knob — Ollama's image surface
+/// doesn't expose those. `model` is optional; the backend falls back
+/// to `OLLAMA_MODEL` or the project default when unset.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Txt2ImgRequest {
+    pub prompt: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Single entry in the `/api/v1/models/image` listing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageModelEntry {
+    pub name: String,
+    /// Ollama-reported family ids, e.g. `["gemma3"]` or
+    /// `["qwen2.5vl"]`. Mostly informational — the agent can use this
+    /// to pick a model that matches the user's stylistic intent.
+    #[serde(default)]
+    pub families: Vec<String>,
+}
+
+/// Body of `GET /api/v1/models/image`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageModelsResponse {
+    pub models: Vec<ImageModelEntry>,
+}
+
 /// Body for `POST /api/v1/img2img`. Reference-image guided edit via
 /// Flux Kontext. `images` carries one or more base64 PNG/JPEG blobs
 /// without a `data:` prefix; the first image is the denoising target,

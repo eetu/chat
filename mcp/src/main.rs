@@ -22,12 +22,15 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use chat_shared::{
-    Img2ImgRequest, InpaintRequest, DEFAULT_INPAINT_STEPS, DEFAULT_KONTEXT_STEPS,
-    MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
+    Img2ImgRequest, InpaintRequest, Txt2ImgRequest, DEFAULT_INPAINT_STEPS,
+    DEFAULT_KONTEXT_STEPS, MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, ErrorData, ProgressNotificationParam, ProgressToken},
+    model::{
+        CallToolResult, Content, ErrorData, Implementation, ProgressNotificationParam,
+        ProgressToken, ProtocolVersion, ServerCapabilities, ServerInfo,
+    },
     service::RequestContext,
     tool, tool_handler, tool_router,
     transport::stdio,
@@ -39,6 +42,21 @@ use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
 use crate::backend::{BackendConfig, BackendEvent};
+
+/// Parameters for `chat_txt2img`. Pure text-to-image — no reference
+/// image, no mask.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Txt2ImgArgs {
+    /// Natural-language description of the image. Example: "A photo
+    /// of a snowy mountain at golden hour, dramatic lighting".
+    prompt: String,
+    /// Ollama model name to use, e.g. `gemma3:4b-image`. Optional —
+    /// the backend falls back to its configured default
+    /// (`OLLAMA_MODEL` env) when unset. Call `chat_list_image_models`
+    /// first to discover what's installed.
+    #[serde(default)]
+    model: Option<String>,
+}
 
 /// Parameters for `chat_img2img`. Field docs flow into the JSON
 /// Schema via schemars, which MCP clients show to the agent in tool
@@ -103,6 +121,43 @@ impl ChatImageTools {
     }
 
     #[tool(
+        name = "chat_list_image_models",
+        description = "List the Ollama models currently installed on the chat backend that advertise the `image` capability — i.e. those usable with `chat_txt2img`. Call this first when the user asks for txt2img with a specific style or you need to verify a model is available. Result is a JSON array of {name, families}; pass an entry's `name` straight to `chat_txt2img`.
+
+This does NOT list ComfyUI workflows. `chat_img2img` (Flux Kontext) and `chat_inpaint` (Flux Fill) have fixed model selections at the workflow level — no model picker for those.
+
+Cheap to call repeatedly; the backend caches Ollama capability lookups for 5 minutes."
+    )]
+    async fn chat_list_image_models(&self) -> Result<CallToolResult, ErrorData> {
+        match self.backend.list_image_models().await {
+            Ok(resp) => Content::json(resp).map(|c| CallToolResult::success(vec![c])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(
+        name = "chat_txt2img",
+        description = "Generate an image from a text prompt using Ollama's image-generation endpoint.
+
+Use this when the user wants a fresh image and has not provided any reference image. If they DID provide a reference image they want edited, use `chat_img2img` instead. If they want a region of an existing image repainted under a mask, use `chat_inpaint`.
+
+`model` is optional — call `chat_list_image_models` first if you need to pick a specific one; otherwise the backend's default model is used. Output is a single image content block (image/png, base64).
+
+No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical render takes 15-60s warm, plus a model-load tax on cold start."
+    )]
+    async fn chat_txt2img(
+        &self,
+        Parameters(args): Parameters<Txt2ImgArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let body = Txt2ImgRequest {
+            prompt: args.prompt,
+            model: args.model,
+        };
+        run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body)).await
+    }
+
+    #[tool(
         name = "chat_img2img",
         description = "Edit one or more reference images using the Flux Kontext model and return a new PNG.
 
@@ -164,12 +219,29 @@ Returns a single image content block (image/png, base64)."
 }
 
 #[tool_handler]
-impl ServerHandler for ChatImageTools {}
+impl ServerHandler for ChatImageTools {
+    // Spec-strict MCP clients (Claude Code in particular) refuse to
+    // call `tools/list` unless the server's `initialize` response
+    // advertises `capabilities.tools`. The `#[tool_handler]` macro
+    // injects `call_tool` and `list_tools` but NOT `get_info`, so
+    // the default `ServerInfo` ships with empty capabilities and the
+    // client sees zero tools. Override `get_info` to enable the
+    // tools capability explicitly.
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo {
+            protocol_version: ProtocolVersion::default(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
+            server_info: Implementation::from_build_env(),
+            instructions: None,
+        }
+    }
+}
 
 /// One generation job to dispatch through `run_tool`. Owned values
 /// only — `run_tool` spawns the SSE pump on a fresh task so the body
 /// can't borrow from the caller.
 enum BackendJob {
+    Txt2Img(Txt2ImgRequest),
     Img2Img(Img2ImgRequest),
     Inpaint(InpaintRequest),
 }
@@ -189,6 +261,7 @@ async fn run_tool(
     let backend_for_pump = backend.clone();
     let pump = tokio::spawn(async move {
         match job {
+            BackendJob::Txt2Img(req) => backend_for_pump.txt2img(&req, tx).await,
             BackendJob::Img2Img(req) => backend_for_pump.img2img(&req, tx).await,
             BackendJob::Inpaint(req) => backend_for_pump.inpaint(&req, tx).await,
         }

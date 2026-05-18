@@ -24,12 +24,12 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use actix_web::web;
+use actix_web::{web, HttpResponse};
 use actix_web_lab::sse;
 use chat_shared::{
-    ErrorPayload, Img2ImgRequest, ImageResponse, InpaintRequest, PreviewPayload,
-    ProgressPayload, DEFAULT_INPAINT_STEPS, DEFAULT_KONTEXT_STEPS, MAX_INPAINT_STEPS,
-    MAX_KONTEXT_STEPS, MIN_STEPS,
+    ErrorPayload, ImageModelEntry, ImageModelsResponse, ImageResponse, Img2ImgRequest,
+    InpaintRequest, PreviewPayload, ProgressPayload, Txt2ImgRequest, DEFAULT_INPAINT_STEPS,
+    DEFAULT_KONTEXT_STEPS, MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
 };
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -102,6 +102,141 @@ pub async fn img2img(
     });
 
     Ok(sse_stream(rx))
+}
+
+/// POST /api/v1/txt2img
+///
+/// Pure text-to-image generation via Ollama's
+/// `/v1/images/generations`. Returns the same SSE event shape as the
+/// ComfyUI paths, minus `progress` / `preview` — Ollama's image
+/// surface isn't streaming, so the agent sees `queued` (if applicable)
+/// followed by `done` or `error`.
+///
+/// `model` is optional; falls back to `ollama::resolve_model(None)`
+/// (which itself prefers `OLLAMA_MODEL`).
+pub async fn txt2img(
+    state: web::Data<Arc<AppState>>,
+    _auth: ApiKey,
+    body: web::Json<Txt2ImgRequest>,
+) -> Result<sse::Sse<ReceiverStream<Result<sse::Event, Infallible>>>, actix_web::Error> {
+    if body.prompt.trim().is_empty() {
+        return Err(actix_web::error::ErrorBadRequest("prompt: required"));
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<sse::Event, Infallible>>(SSE_CHANNEL);
+    let state_clone = state.get_ref().clone();
+    let payload = body.into_inner();
+    let model = ollama::resolve_model(&state_clone, payload.model.as_deref());
+
+    tokio::spawn(async move {
+        let _permit = match acquire_image_permit(&state_clone, &tx).await {
+            Some(p) => p,
+            None => return,
+        };
+        // Race against the SSE client disconnect. Ollama has no
+        // public cancel; dropping the reqwest future closes TCP, so
+        // the bytes never land in the agent's pipe even though the
+        // upstream may keep generating server-side until done.
+        let cancel_tx = tx.clone();
+        let result: Result<String, ChatStreamError> = tokio::select! {
+            r = ollama::generate_image(&state_clone, &model, &payload.prompt) => r,
+            _ = cancel_tx.closed() => {
+                tracing::info!("api/v1/txt2img cancelled by client");
+                Err(ChatStreamError::Cancelled)
+            }
+        };
+        match result {
+            Ok(image_b64) => {
+                let _ = tx
+                    .send(Ok(ollama::sse_json(
+                        "done",
+                        &serde_json::to_value(ImageResponse { image_b64 })
+                            .unwrap_or_default(),
+                    )))
+                    .await;
+            }
+            Err(e) => {
+                let msg = match &e {
+                    ChatStreamError::Cancelled => "cancelled".to_string(),
+                    ChatStreamError::ComfyTimeout => "comfyui timed out".to_string(),
+                    ChatStreamError::EmptyImage => "no image produced".to_string(),
+                    ChatStreamError::Http(err) => format!("upstream error: {err}"),
+                };
+                tracing::warn!("api/v1/txt2img failed: {e}");
+                let _ = tx
+                    .send(Ok(ollama::sse_json(
+                        "error",
+                        &serde_json::to_value(ErrorPayload { message: msg })
+                            .unwrap_or_default(),
+                    )))
+                    .await;
+            }
+        }
+        // Free the model so the next request — txt2img, img2img, or a
+        // chat turn — isn't fighting for VRAM. Chat handler does the
+        // same after its image path.
+        ollama::evict(&state_clone, &model).await;
+    });
+
+    Ok(sse_stream(rx))
+}
+
+/// GET /api/v1/models/image
+///
+/// Returns the subset of installed Ollama models that advertise the
+/// `image` capability via `/api/show`. Caps go through the existing
+/// `CapsCache` so this stays cheap when called repeatedly. The agent
+/// is expected to call this once before invoking `txt2img` so it can
+/// pick a real model name rather than guessing one.
+pub async fn list_image_models(
+    state: web::Data<Arc<AppState>>,
+    _auth: ApiKey,
+) -> HttpResponse {
+    if let Some(locked) = &state.settings.ollama_model_lock {
+        // Locked model takes the same shortcut as the chat surface.
+        // Whether it's image-capable depends on the deployment; we
+        // surface it regardless so the agent can attempt a call.
+        return HttpResponse::Ok().json(ImageModelsResponse {
+            models: vec![ImageModelEntry {
+                name: locked.clone(),
+                families: vec![],
+            }],
+        });
+    }
+    let raw = match ollama::list_models(&state).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("api/v1 list_image_models upstream failed: {e}");
+            return HttpResponse::BadGateway()
+                .json(serde_json::json!({"error": e.to_string()}));
+        }
+    };
+    let mut out: Vec<ImageModelEntry> = Vec::new();
+    if let Some(arr) = raw.get("models").and_then(|v| v.as_array()) {
+        for m in arr {
+            let Some(name) = m.get("name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let caps = if let Some(c) = state.caps_cache.get(name).await {
+                c
+            } else {
+                match ollama::show_capabilities(&state, name).await {
+                    Ok(c) => {
+                        state.caps_cache.set(name.to_string(), c.clone()).await;
+                        c
+                    }
+                    Err(_) => ollama::ModelCapabilities::default(),
+                }
+            };
+            if caps.capabilities.iter().any(|c| c == "image") {
+                out.push(ImageModelEntry {
+                    name: name.to_string(),
+                    families: caps.families.clone(),
+                });
+            }
+        }
+    }
+    HttpResponse::Ok().json(ImageModelsResponse { models: out })
 }
 
 /// POST /api/v1/inpaint
