@@ -142,6 +142,24 @@ pub fn create_app(
                 .route("/logout", web::post().to(auth::logout)),
         )
         .service(
+            // /api/v1 — stateless MCP-facing image endpoints. Same
+            // JSON body cap as /api/chat (base64 image inflate factor
+            // ~33% on the wire). Bearer-auth gated by ApiKey extractor
+            // inside each handler.
+            //
+            // MUST be registered BEFORE the /api scope below. actix-web
+            // matches scopes by exclusive prefix: the first scope whose
+            // prefix matches the request path consumes it. If /api came
+            // first, /api/v1/* would hit /api, find no child route, and
+            // 404 without falling through to /api/v1.
+            web::scope("/api/v1")
+                .app_data(web::JsonConfig::default().limit(12 * 1024 * 1024))
+                .route("/txt2img", web::post().to(handlers_api::txt2img))
+                .route("/img2img", web::post().to(handlers_api::img2img))
+                .route("/inpaint", web::post().to(handlers_api::inpaint))
+                .route("/models/image", web::get().to(handlers_api::list_image_models)),
+        )
+        .service(
             web::scope("/api")
                 .route("/me", web::get().to(auth::me))
                 .route("/me", web::delete().to(auth::delete_me))
@@ -216,18 +234,6 @@ pub fn create_app(
                         .route(web::post().to(handlers::transcribe)),
                 )
                 .route("/tts", web::post().to(handlers::tts)),
-        )
-        .service(
-            // /api/v1 — stateless MCP-facing image endpoints. Same
-            // JSON body cap as /api/chat (base64 image inflate factor
-            // ~33% on the wire). Bearer-auth gated by ApiKey extractor
-            // inside each handler.
-            web::scope("/api/v1")
-                .app_data(web::JsonConfig::default().limit(12 * 1024 * 1024))
-                .route("/txt2img", web::post().to(handlers_api::txt2img))
-                .route("/img2img", web::post().to(handlers_api::img2img))
-                .route("/inpaint", web::post().to(handlers_api::inpaint))
-                .route("/models/image", web::get().to(handlers_api::list_image_models)),
         )
         .service({
             let index_path = format!("{static_dir}/index.html");
