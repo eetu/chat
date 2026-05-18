@@ -2078,7 +2078,7 @@ __metadata:
     eslint: "npm:^10.3.0"
     eslint-config: "github:eetu/eslint-config#v2.0.1"
     highlight.js: "npm:^11.11.1"
-    katex: "npm:^0.16.45"
+    katex: "npm:^0.16.47"
     mermaid: "npm:^11.15.0"
     playwright: "npm:^1"
     prettier: "npm:^3.8.3"
@@ -3682,7 +3682,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"katex@npm:^0.16.0, katex@npm:^0.16.25, katex@npm:^0.16.45":
+"katex@npm:^0.16.0, katex@npm:^0.16.25":
   version: 0.16.45
   resolution: "katex@npm:0.16.45"
   dependencies:
@@ -3690,6 +3690,17 @@ __metadata:
   bin:
     katex: cli.js
   checksum: 10/8c82f9651c3615459722166a6ccb16f23ecd8323850a956568b69b1f641331a57679aa9f3ad4903c4be26089434cbbde850c0384b9b0dff022e4357b84a20ebc
+  languageName: node
+  linkType: hard
+
+"katex@npm:^0.16.47":
+  version: 0.16.47
+  resolution: "katex@npm:0.16.47"
+  dependencies:
+    commander: "npm:^8.3.0"
+  bin:
+    katex: cli.js
+  checksum: 10/e0286b45d9e0c8443cf0381205619ecbab3919ea5fb6616408f46f0cb471ce2222e83f46aef52cdaacdcbfd4485e00fcfbcf36bd85a8a9a81e22b45827c27ced
   languageName: node
   linkType: hard
 
