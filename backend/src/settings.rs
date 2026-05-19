@@ -45,6 +45,14 @@ pub struct Settings {
     /// Max concurrent image-generation jobs. VRAM-bound on Apple Silicon;
     /// default 1.
     pub image_gen_concurrency: usize,
+    /// Default Ollama model for `/api/v1/txt2img` when the caller
+    /// doesn't pass `model` in the request body. Picked because the
+    /// chat-side fallback (`ollama::resolve_model`) returns the chat
+    /// model lock or `llama3.1` — neither image-capable — which would
+    /// 404 on Ollama's `/v1/images/generations`. Set
+    /// `CHAT_DEFAULT_IMAGE_MODEL` to an image-capable model installed
+    /// on the backing Ollama, e.g. `x/flux2-klein:4b`.
+    pub default_image_model: Option<String>,
     /// How long a generated image stays in the in-memory buffer
     /// served by `GET /api/v1/images/{uuid}.png`. Tuned for "agent
     /// renders, user reviews, user saves" workflows; 30 min is long
@@ -119,6 +127,9 @@ impl Settings {
             .filter(|n: &usize| *n > 0)
             .unwrap_or(1);
         let mcp_api_key = env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
+        let default_image_model = env::var("CHAT_DEFAULT_IMAGE_MODEL")
+            .ok()
+            .filter(|s| !s.is_empty());
         let image_buffer_ttl_secs = env::var("CHAT_IMAGE_BUFFER_TTL_SECS")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -165,6 +176,7 @@ impl Settings {
             auth_rate_per_min,
             image_gen_concurrency,
             mcp_api_key,
+            default_image_model,
             image_buffer_ttl_secs,
             image_buffer_limit,
         }
@@ -192,6 +204,7 @@ impl Settings {
             auth_rate_per_min: 0,
             image_gen_concurrency: 1,
             mcp_api_key: None,
+            default_image_model: None,
             image_buffer_ttl_secs: 1800,
             image_buffer_limit: 64,
         }

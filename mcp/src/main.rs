@@ -141,7 +141,14 @@ impl ChatImageTools {
 
 This does NOT list ComfyUI workflows. `chat_img2img` (Flux Kontext) and `chat_inpaint` (Flux Fill) have fixed model selections at the workflow level — no model picker for those.
 
-Cheap to call repeatedly; the backend caches Ollama capability lookups for 5 minutes."
+Cheap to call repeatedly; the backend caches Ollama capability lookups for 5 minutes.",
+        annotations(
+            title = "List image models",
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     async fn chat_list_image_models(&self) -> Result<CallToolResult, ErrorData> {
         match self.backend.list_image_models().await {
@@ -152,13 +159,22 @@ Cheap to call repeatedly; the backend caches Ollama capability lookups for 5 min
 
     #[tool(
         name = "chat_txt2img",
-        description = "Generate an image from a text prompt using Ollama's image-generation endpoint.
+        description = "**IMPORTANT: If `model` is not provided, the backend uses a configured default. When no default is set, this call fails with an actionable error directing you to `chat_list_image_models`. When in doubt about which model to use, call `chat_list_image_models` first.**
+
+Generate an image from a text prompt using Ollama's image-generation endpoint.
 
 Use this when the user wants a fresh image and has not provided any reference image. If they DID provide a reference image they want edited, use `chat_img2img` instead. If they want a region of an existing image repainted under a mask, use `chat_inpaint`.
 
-`model` is optional — call `chat_list_image_models` first if you need to pick a specific one; otherwise the backend's default model is used. Output is a single image content block (image/png, base64).
+By default the result contains a fetch URL only — the PNG bytes are NOT in your context. Set `inline: true` when you need to see the result to reason about it (chained edits, visual critique).
 
-No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical render takes 15-60s warm, plus a model-load tax on cold start."
+No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical render takes 15-60s warm, plus a model-load tax on cold start.",
+        annotations(
+            title = "Generate image from text",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn chat_txt2img(
         &self,
@@ -185,7 +201,14 @@ Speed / quality tradeoff via `steps`:
 
 When the user asks for \"quick\" / \"draft\" / \"preview\", pick a low value. When they ask for \"high quality\" / \"final\" / \"really good\", pick a high value. Cold-start adds ~15s.
 
-Returns a single image content block (image/png, base64)."
+By default the result contains a fetch URL only — the PNG bytes are NOT in your context. Set `inline: true` when you need to see the result to reason about it (chained edits, visual critique).",
+        annotations(
+            title = "Edit image (Flux Kontext)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn chat_img2img(
         &self,
@@ -215,7 +238,14 @@ Speed / quality tradeoff via `steps`:
 
 When the user asks for \"quick\" / \"draft\", pick the low end. When they ask for \"final\" / \"really good\", pick the high end. Cold-start adds ~15s.
 
-Returns a single image content block (image/png, base64)."
+By default the result contains a fetch URL only — the PNG bytes are NOT in your context. Set `inline: true` when you need to see the result to reason about it (chained edits, visual critique).",
+        annotations(
+            title = "Inpaint masked region (Flux Fill)",
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = true,
+        )
     )]
     async fn chat_inpaint(
         &self,
@@ -242,12 +272,39 @@ impl ServerHandler for ChatImageTools {
     // the default `ServerInfo` ships with empty capabilities and the
     // client sees zero tools. Override `get_info` to enable the
     // tools capability explicitly.
+    //
+    // `instructions` is a free-form string MCP clients show as
+    // system-prompt-style guidance every time these tools are loaded.
+    // Use it to teach the agent the non-obvious bits up front so it
+    // doesn't have to discover them through failed calls.
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             protocol_version: ProtocolVersion::default(),
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
-            instructions: None,
+            instructions: Some(
+                "Image generation tools for the chat backend. Three generators \
+                 (chat_txt2img, chat_img2img, chat_inpaint) and one discovery \
+                 tool (chat_list_image_models).\n\n\
+                 USAGE NOTES:\n\
+                 - chat_txt2img is Ollama-backed. If you don't pass `model`, \
+                   the backend uses CHAT_DEFAULT_IMAGE_MODEL; if that's unset \
+                   it will reject the call with an actionable error pointing \
+                   you at chat_list_image_models. When in doubt, call \
+                   chat_list_image_models first.\n\
+                 - chat_img2img and chat_inpaint are ComfyUI-backed with \
+                   fixed workflow models (Flux Kontext / Flux Fill). No \
+                   `model` parameter for those.\n\
+                 - Results return a fetch URL by default; the PNG bytes are \
+                   NOT in your context. URLs expire after ~30 min. Pass \
+                   `inline: true` when you need to see the image yourself \
+                   (chained edits, visual critique) — that's the only time \
+                   the bytes enter your context window.\n\
+                 - All three generators support a `steps` knob (except \
+                   txt2img — Ollama doesn't expose sampler controls). Low \
+                   steps = fast draft, high steps = better quality."
+                    .into(),
+            ),
         }
     }
 }

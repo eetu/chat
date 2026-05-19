@@ -46,10 +46,11 @@ include the base64 image content block when the agent needs to
 *see* the result (chained edits, visual critique). The fetch URL
 is still emitted alongside.
 
-Backend storage knobs (set on the *backend* container, not chat-mcp):
+Backend knobs (set on the *backend* container, not chat-mcp):
 
 | Env | Default | Purpose |
 |---|---|---|
+| `CHAT_DEFAULT_IMAGE_MODEL` | unset | Ollama model used by `chat_txt2img` when the caller doesn't pass `model`. Without this, calls fail until the agent supplies one explicitly. Recommended: `x/flux2-klein:4b` or similar. |
 | `CHAT_IMAGE_BUFFER_TTL_SECS` | `1800` | How long renders live before sweep drops them. |
 | `CHAT_IMAGE_BUFFER_LIMIT` | `64` | Max entries before oldest is evicted on insert. |
 

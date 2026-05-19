@@ -128,13 +128,53 @@ pub async fn txt2img(
     let (tx, rx) = mpsc::channel::<Result<sse::Event, Infallible>>(SSE_CHANNEL);
     let state_clone = state.get_ref().clone();
     let payload = body.into_inner();
-    let model = ollama::resolve_model(&state_clone, payload.model.as_deref());
+    // Resolution precedence: request `model` > settings.default_image_model >
+    // ollama::resolve_model fallback. The last step's "fallback" is the chat
+    // model lock or `llama3.1`, neither image-capable — we still resolve to
+    // it so we can return a structured error instead of an opaque 404 from
+    // Ollama.
+    let model = payload
+        .model
+        .clone()
+        .or_else(|| state_clone.settings.default_image_model.clone())
+        .unwrap_or_else(|| ollama::resolve_model(&state_clone, None));
 
     tokio::spawn(async move {
         let _permit = match acquire_image_permit(&state_clone, &tx).await {
             Some(p) => p,
             None => return,
         };
+        // Pre-flight capability check: if the resolved model doesn't
+        // advertise the `image` capability, Ollama will 404 on
+        // /v1/images/generations and the caller gets a confusing
+        // upstream error. Catch it here with an actionable message
+        // pointing the agent at chat_list_image_models.
+        match ollama::show_capabilities(&state_clone, &model).await {
+            Ok(caps) if caps.capabilities.iter().any(|c| c == "image") => {}
+            Ok(_) => {
+                let msg = format!(
+                    "model `{model}` is not image-capable. Set the `model` \
+                     parameter to an image model, or configure \
+                     CHAT_DEFAULT_IMAGE_MODEL on the backend. Call the \
+                     /api/v1/models/image endpoint (or chat_list_image_models \
+                     tool) for a list of installed image models."
+                );
+                tracing::warn!("api/v1/txt2img rejected: {msg}");
+                let _ = tx
+                    .send(Ok(ollama::sse_json(
+                        "error",
+                        &serde_json::to_value(ErrorPayload { message: msg })
+                            .unwrap_or_default(),
+                    )))
+                    .await;
+                return;
+            }
+            Err(e) => {
+                tracing::warn!("api/v1/txt2img caps lookup failed for {model}: {e} — proceeding");
+                // Fall through; we'd rather a real Ollama error than
+                // mask a transient caps lookup hiccup.
+            }
+        }
         // Race against the SSE client disconnect. Ollama has no
         // public cancel; dropping the reqwest future closes TCP, so
         // the bytes never land in the agent's pipe even though the
