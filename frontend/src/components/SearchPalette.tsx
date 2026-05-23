@@ -147,7 +147,7 @@ const SearchPalette = ({ onClose }: Props) => {
           }}
         >
           <span
-            className="material-icons-outlined"
+            className="material-symbols-outlined"
             aria-hidden
             css={{ fontSize: 20, color: theme.colors.text.muted }}
           >

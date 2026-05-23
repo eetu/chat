@@ -74,7 +74,7 @@ const SettingsView = () => {
               },
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 20 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 20 }}>
               arrow_back
             </span>
           </button>
@@ -372,7 +372,10 @@ const DocumentsSection = ({ theme }: { theme: Theme }) => {
                 },
               }}
             >
-              <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+              <span
+                className="material-symbols-outlined"
+                css={{ fontSize: 18 }}
+              >
                 close
               </span>
             </button>

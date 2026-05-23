@@ -71,6 +71,16 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
     height: number;
   } | null>(null);
   const [hasStroke, setHasStroke] = useState(false);
+  // Brush-size preview ring follows the mouse pointer when the user
+  // isn't actively drawing — gives a "what will the next stroke
+  // cover?" affordance instead of having to draw a test stroke first.
+  // Suppressed on touch (no hover state); the active drawing path
+  // already gives touch users immediate visual feedback via STROKE_COLOR.
+  const [cursorOverlay, setCursorOverlay] = useState<{
+    x: number;
+    y: number;
+    diameter: number;
+  } | null>(null);
 
   // Refs hold drawing state so pointer-handler closures aren't
   // re-created on every brush-size tweak — the handlers read these
@@ -283,11 +293,38 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    updateCursorOverlay(e);
     if (!drawingRef.current) return;
     const last = lastPointRef.current;
     const next = pointToCanvas(e);
     if (last) drawStrokeSegment(last, next);
     lastPointRef.current = next;
+  };
+
+  // Track display-space position for the cursor ring. Skip for touch
+  // — there's no "hover" idle state worth previewing, and showing a
+  // ring at the last-tapped position would be misleading.
+  const updateCursorOverlay = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    if (e.pointerType !== "mouse") return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0) return;
+    // Display-space brush diameter = canvas-space size × display scale.
+    const diameter = brushRef.current * (rect.width / canvas.width);
+    setCursorOverlay({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      diameter,
+    });
+  };
+
+  const onPointerEnter = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+    updateCursorOverlay(e);
+  };
+
+  const onPointerLeave = () => {
+    setCursorOverlay(null);
   };
 
   const endStroke = (e: ReactPointerEvent<HTMLCanvasElement>) => {
@@ -399,7 +436,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
             onClick={onCancel}
             css={iconButton}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
               close
             </span>
           </button>
@@ -486,15 +523,45 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
             onPointerMove={onPointerMove}
             onPointerUp={endStroke}
             onPointerCancel={endStroke}
+            onPointerEnter={onPointerEnter}
+            onPointerLeave={onPointerLeave}
             css={{
               position: "absolute",
               inset: 0,
               width: "100%",
               height: "100%",
-              cursor: tool === "eraser" ? "cell" : "crosshair",
+              // Hide the OS cursor over the canvas — the overlay ring
+              // below is the cursor. Falls back to crosshair / cell when
+              // the ring is suppressed (touch / out-of-bounds) so the
+              // tool intent stays visible.
+              cursor: cursorOverlay
+                ? "none"
+                : tool === "eraser"
+                  ? "cell"
+                  : "crosshair",
               touchAction: "none",
             }}
           />
+          {cursorOverlay ? (
+            <div
+              aria-hidden="true"
+              css={{
+                position: "absolute",
+                left: cursorOverlay.x,
+                top: cursorOverlay.y,
+                width: cursorOverlay.diameter,
+                height: cursorOverlay.diameter,
+                transform: "translate(-50%, -50%)",
+                borderRadius: "50%",
+                // White outer + dark inner ring stays legible against
+                // both bright and dark image regions without obscuring
+                // the underlying pixels.
+                border: "1px solid rgba(0, 0, 0, 0.85)",
+                boxShadow: "0 0 0 1px rgba(255, 255, 255, 0.9)",
+                pointerEvents: "none",
+              }}
+            />
+          ) : null}
         </div>
       </div>
 
@@ -506,6 +573,11 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
           gap: 12,
           padding: "8px 12px 0",
           color: "#fff",
+          // Stop horizontal swipes inside the footer from being
+          // interpreted by the browser (overscroll chaining → swipe
+          // back navigation on iOS Safari and some Android browsers).
+          overscrollBehaviorX: "contain",
+          touchAction: "pan-y",
         }}
       >
         <div css={{ display: "flex", gap: 4 }}>
@@ -553,8 +625,35 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
             max={MAX_BRUSH}
             value={brushSize}
             onChange={(e) => setBrushSize(Number(e.target.value))}
+            // pointerdown handler runs ahead of iOS Safari's edge-swipe
+            // gesture arbitration in most cases; stopping propagation +
+            // claiming the pointer prevents the "drag = browser back"
+            // hijack when the slider thumb sits near the viewport edge.
+            // touchAction:none on its own isn't enough because the
+            // system gesture is recognised before the per-element CSS
+            // is consulted; capturing the pointer makes the input the
+            // exclusive recipient of move events for this gesture.
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              (e.currentTarget as HTMLInputElement).setPointerCapture?.(
+                e.pointerId,
+              );
+            }}
             aria-label="brush size"
-            css={{ width: 160 }}
+            css={{
+              width: 160,
+              touchAction: "none",
+              // Bigger vertical tap target on phones — the native thumb
+              // is hard to grab at 16px high; padding here doesn't
+              // affect track length, only hit area.
+              paddingBlock: 8,
+              // Prevent the slider track from sitting flush against
+              // the viewport edge where iOS reserves a swipe-back
+              // gesture zone. The footer's own padding usually keeps
+              // this clear, but on narrow phones with flex-wrap it
+              // can land at the left edge after wrapping.
+              marginInline: 8,
+            }}
           />
           <span
             css={{
@@ -608,8 +707,12 @@ const ToolButton = ({
     disabled={disabled}
     onClick={onClick}
     css={{
-      width: 36,
-      height: 36,
+      // 44×44 matches Apple HIG's minimum tap target. The icon stays
+      // visually 22px; the extra padding is just for finger accuracy
+      // on phones where mis-taps onto adjacent buttons (or the
+      // canvas) were making it hard to switch tools.
+      width: 44,
+      height: 44,
       borderRadius: 8,
       border: "none",
       background: active ? "rgba(255,255,255,0.22)" : "transparent",
@@ -618,9 +721,15 @@ const ToolButton = ({
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
+      // Tool buttons sit next to the canvas which captures pan
+      // gestures with touch-action:none. `manipulation` here skips
+      // double-tap-zoom and click delay so the tap registers
+      // immediately on the button, not after a 300 ms gesture
+      // arbitration.
+      touchAction: "manipulation",
     }}
   >
-    <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+    <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
       {icon}
     </span>
   </button>

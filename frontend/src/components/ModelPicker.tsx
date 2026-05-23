@@ -60,7 +60,7 @@ const ModelPicker = ({ value, onChange, disabled }: Props) => {
         }}
         title="model locked by server config (OLLAMA_MODEL)"
       >
-        <span className="material-icons-outlined" css={{ fontSize: 14 }}>
+        <span className="material-symbols-outlined" css={{ fontSize: 14 }}>
           lock
         </span>
         {names[0] ?? "—"}

@@ -650,7 +650,7 @@ const ChatView = () => {
             "&:hover": { background: theme.colors.background.light },
           }}
         >
-          <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+          <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
             arrow_downward
           </span>
         </button>

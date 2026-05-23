@@ -286,7 +286,7 @@ const Lightbox = ({ src, onClose }: { src: string; onClose: () => void }) => {
           WebkitBackdropFilter: "blur(6px)",
         }}
       >
-        <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+        <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
           close
         </span>
       </button>
@@ -1101,7 +1101,7 @@ const ActionButton = ({ onClick, label, icon, theme }: ActionButtonProps) => (
       },
     }}
   >
-    <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+    <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
       {icon}
     </span>
   </button>
@@ -1133,7 +1133,7 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
         }}
       >
         <span
-          className="material-icons-outlined"
+          className="material-symbols-outlined"
           css={{
             fontSize: 16,
             transition: "transform 120ms ease",
@@ -1167,7 +1167,7 @@ const SourcesChip = ({
     }}
   >
     <span
-      className="material-icons-outlined"
+      className="material-symbols-outlined"
       aria-hidden
       css={{ fontSize: 14 }}
     >
@@ -1274,7 +1274,7 @@ const ImageGenPlaceholder = ({
         />
       ) : (
         <span
-          className="material-icons-outlined"
+          className="material-symbols-outlined"
           css={{
             fontSize: 36,
             animation: "chat-pulse 1.6s ease-in-out infinite",

@@ -946,7 +946,7 @@ const Composer = ({
             }}
           >
             <span
-              className="material-icons-outlined"
+              className="material-symbols-outlined"
               css={{
                 fontSize: 18,
                 marginRight: 6,
@@ -977,7 +977,7 @@ const Composer = ({
               }}
             >
               <span
-                className="material-icons-outlined"
+                className="material-symbols-outlined"
                 css={{
                   fontSize: 14,
                   color: theme.colors.activity.on,
@@ -1050,7 +1050,7 @@ const Composer = ({
                     }}
                   >
                     <span
-                      className="material-icons-outlined"
+                      className="material-symbols-outlined"
                       css={{ fontSize: 12 }}
                     >
                       close
@@ -1161,7 +1161,7 @@ const Composer = ({
                   css={composerSubButtonCss(theme)}
                 >
                   <span
-                    className="material-icons-outlined"
+                    className="material-symbols-outlined"
                     css={{ fontSize: 22 }}
                   >
                     add
@@ -1206,7 +1206,7 @@ const Composer = ({
                   }}
                 >
                   <span
-                    className="material-icons-outlined"
+                    className="material-symbols-outlined"
                     css={{ fontSize: 22 }}
                   >
                     {voiceState === "idle"
@@ -1262,7 +1262,7 @@ const Composer = ({
                 css={composerSubButtonCss(theme)}
               >
                 <span
-                  className="material-icons-outlined"
+                  className="material-symbols-outlined"
                   css={{ fontSize: 22 }}
                 >
                   {mode === "chat" ? "image" : "chat_bubble_outline"}
@@ -1295,7 +1295,7 @@ const Composer = ({
                     }}
                   >
                     <span
-                      className="material-icons-outlined"
+                      className="material-symbols-outlined"
                       css={{ fontSize: 22 }}
                     >
                       {mask ? "brush" : "edit"}
@@ -1326,7 +1326,7 @@ const Composer = ({
                 }}
               >
                 <span
-                  className="material-icons-outlined"
+                  className="material-symbols-outlined"
                   css={{ fontSize: 22 }}
                 >
                   block
@@ -1359,7 +1359,7 @@ const Composer = ({
                 css={iconButtonCss(theme.colors.text.main, "#fff")}
               >
                 <span
-                  className="material-icons-outlined"
+                  className="material-symbols-outlined"
                   css={{ fontSize: 20 }}
                 >
                   stop
@@ -1380,7 +1380,7 @@ const Composer = ({
                 }}
               >
                 <span
-                  className="material-icons-outlined"
+                  className="material-symbols-outlined"
                   css={{ fontSize: 20 }}
                 >
                   arrow_upward
@@ -1464,7 +1464,7 @@ const AttachmentModeToggle = ({
               cursor: "pointer",
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
               {c.icon}
             </span>
           </button>
@@ -1583,7 +1583,7 @@ const RefineControl = ({
             color: accent,
           }}
         >
-          <span className="material-icons-outlined" css={{ fontSize: 22 }}>
+          <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
             auto_fix_high
           </span>
         </button>
@@ -1612,7 +1612,7 @@ const RefineControl = ({
               "&:hover": { color: theme.colors.text.main },
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
               {open ? "expand_less" : "expand_more"}
             </span>
           </button>

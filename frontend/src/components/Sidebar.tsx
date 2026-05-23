@@ -95,7 +95,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
               },
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 20 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 20 }}>
               chevron_left
             </span>
           </button>
@@ -121,7 +121,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
           gap: 8,
         }}
       >
-        <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+        <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
           add
         </span>
         new chat
@@ -152,7 +152,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
             },
           }}
         >
-          <span className="material-icons-outlined" css={{ fontSize: 16 }}>
+          <span className="material-symbols-outlined" css={{ fontSize: 16 }}>
             search
           </span>
           <span css={{ flex: 1 }}>search…</span>
@@ -235,7 +235,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
             {me.username}
           </span>
           <span
-            className="material-icons-outlined"
+            className="material-symbols-outlined"
             aria-hidden
             css={{
               fontSize: 20,

@@ -127,7 +127,10 @@ const RootLayout = () => {
                 },
               }}
             >
-              <span className="material-icons-outlined" css={{ fontSize: 20 }}>
+              <span
+                className="material-symbols-outlined"
+                css={{ fontSize: 20 }}
+              >
                 menu
               </span>
             </button>

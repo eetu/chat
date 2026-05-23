@@ -174,7 +174,7 @@ const SwipeRow = ({
               },
             }}
           >
-            <span className="material-icons-outlined" css={{ fontSize: 18 }}>
+            <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
               close
             </span>
           </button>
