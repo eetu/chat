@@ -42,7 +42,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-use oidc::OidcContext;
+use oidc::OidcLazy;
 use ollama::ModelCapabilities;
 use ratelimit::RateLimiter;
 use settings::Settings;
@@ -82,7 +82,10 @@ pub struct AppState {
     pub settings: Settings,
     pub http_client: reqwest::Client,
     pub storage: Storage,
-    pub oidc: Option<OidcContext>,
+    /// Lazily-discovered OIDC provider with on-demand retry. Discovery runs
+    /// on first auth use and on the `/status` poll, so a kanidm that was
+    /// down at boot self-heals without a restart. See [`oidc::OidcLazy`].
+    pub oidc: OidcLazy,
     pub caps_cache: CapsCache,
     pub chat_limit: RateLimiter,
     pub auth_limit: RateLimiter,
@@ -287,23 +290,11 @@ pub async fn run_server() -> std::io::Result<()> {
     let storage = Storage::open(std::path::Path::new(&db_path))
         .expect("failed to open SQLite database");
 
-    let oidc = match &settings.oidc {
-        Some(s) => match OidcContext::discover(s).await {
-            Ok(ctx) => {
-                tracing::info!("oidc provider discovered: {}", s.issuer);
-                Some(ctx)
-            }
-            Err(e) => {
-                tracing::error!(
-                    "oidc discovery failed for {}: {e}; falling back to dev_auth = {}",
-                    s.issuer,
-                    settings.dev_auth
-                );
-                None
-            }
-        },
-        None => None,
-    };
+    // OIDC discovery is lazy (not at boot): kanidm may boot concurrently
+    // with us, and a failed one-shot boot discovery would wedge auth until a
+    // manual restart. Instead the first auth call and the `/status` poll
+    // drive discovery + retry, so it self-heals once kanidm is up.
+    let oidc = OidcLazy::new(settings.oidc.clone());
 
     let chat_rate = settings.chat_rate_per_min;
     let auth_rate = settings.auth_rate_per_min;
@@ -353,7 +344,7 @@ pub fn create_test_state() -> Arc<AppState> {
         settings: Settings::test_defaults(),
         http_client: reqwest::Client::new(),
         storage,
-        oidc: None,
+        oidc: OidcLazy::new(None),
         caps_cache: CapsCache::new(),
         chat_limit: RateLimiter::per_minute(0),
         auth_limit: RateLimiter::per_minute(0),
