@@ -41,6 +41,8 @@ export type Status = {
   upstream: boolean;
   model_locked: boolean;
   auth: "dev" | "oidc" | "none";
+  oidc_configured: boolean;
+  oidc_ready: boolean;
   refiner_available: boolean;
   img2img_available: boolean;
   voice_in_available: boolean;

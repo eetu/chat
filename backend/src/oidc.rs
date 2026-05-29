@@ -14,6 +14,7 @@ use openidconnect::{
     PkceCodeVerifier, RedirectUrl, Scope, TokenResponse,
 };
 use thiserror::Error;
+use tokio::sync::RwLock;
 use url::Url;
 
 use crate::settings::OidcSettings;
@@ -149,6 +150,76 @@ impl OidcContext {
         drop(token_response);
 
         Ok(VerifiedClaims { sub, username })
+    }
+}
+
+/// Lazily-discovered OIDC provider with on-demand retry.
+///
+/// Discovery is NOT done at boot. The issuer (kanidm) may boot
+/// concurrently with this process; a one-shot boot discovery that failed
+/// would leave the app serving "auth not configured" forever, since the
+/// IaC only restarts chat on a config change — and `/status` would still
+/// return 200, so no orchestrator would restart it either.
+///
+/// Instead every auth-needing caller — and the `/status` poll — routes
+/// through [`OidcLazy::ctx`]. The first call (or the next after the issuer
+/// comes up) discovers and caches; the regular `/status` poll is therefore
+/// the self-heal driver, no restart required. The write lock single-flights
+/// concurrent retries so a burst of polls makes at most one discovery call.
+///
+/// Kept in lockstep with scribe's `OidcLazy` — both sibling apps self-heal
+/// OIDC the same way; port changes across when one evolves.
+pub struct OidcLazy {
+    settings: Option<OidcSettings>,
+    cached: RwLock<Option<OidcContext>>,
+}
+
+impl OidcLazy {
+    pub fn new(settings: Option<OidcSettings>) -> Self {
+        Self { settings, cached: RwLock::new(None) }
+    }
+
+    /// Whether OIDC is configured at all (env vars present). `false` =
+    /// DEV_AUTH-only (or no auth) deploy; there's nothing to discover.
+    pub fn is_configured(&self) -> bool {
+        self.settings.is_some()
+    }
+
+    /// Whether a provider context is currently cached. Read-only — does NOT
+    /// trigger discovery. For honest health reporting without side effects.
+    pub async fn is_ready(&self) -> bool {
+        self.cached.read().await.is_some()
+    }
+
+    /// Resolve the OIDC context, discovering (or re-discovering) on demand.
+    /// Returns `None` when OIDC isn't configured, or when discovery is still
+    /// failing (issuer down) — the caller should surface a retryable 503.
+    pub async fn ctx(&self) -> Option<OidcContext> {
+        // Fast path: already discovered.
+        if let Some(ctx) = self.cached.read().await.as_ref() {
+            return Some(ctx.clone());
+        }
+        // Nothing to retry if OIDC isn't configured.
+        let settings = self.settings.as_ref()?;
+        let mut guard = self.cached.write().await;
+        // Double-check: another task may have discovered while we waited.
+        if let Some(ctx) = guard.as_ref() {
+            return Some(ctx.clone());
+        }
+        match OidcContext::discover(settings).await {
+            Ok(ctx) => {
+                tracing::info!("oidc provider discovered: {}", settings.issuer);
+                *guard = Some(ctx.clone());
+                Some(ctx)
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "oidc discovery failed for {}: {e}; will retry on next auth/status call",
+                    settings.issuer
+                );
+                None
+            }
+        }
     }
 }
 

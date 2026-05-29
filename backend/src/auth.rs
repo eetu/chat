@@ -173,27 +173,43 @@ pub async fn login(
     }
     let next = sanitize_next(query.next.as_deref());
 
-    if let Some(oidc) = &state.oidc {
-        let auth = oidc.authorize();
-        if let Err(e) = session.insert(SESSION_KEY_CSRF, auth.csrf.secret()) {
-            tracing::error!("session csrf insert: {e}");
-            return HttpResponse::InternalServerError().finish();
+    // OIDC if configured. Discovery is lazy + retried (see OidcLazy), so a
+    // kanidm that was down at boot recovers here without a restart.
+    if state.oidc.is_configured() {
+        match state.oidc.ctx().await {
+            Some(oidc) => {
+                let auth = oidc.authorize();
+                if let Err(e) = session.insert(SESSION_KEY_CSRF, auth.csrf.secret()) {
+                    tracing::error!("session csrf insert: {e}");
+                    return HttpResponse::InternalServerError().finish();
+                }
+                if let Err(e) = session.insert(SESSION_KEY_NONCE, auth.nonce.secret()) {
+                    tracing::error!("session nonce insert: {e}");
+                    return HttpResponse::InternalServerError().finish();
+                }
+                if let Err(e) = session.insert(SESSION_KEY_PKCE, auth.pkce_verifier.secret()) {
+                    tracing::error!("session pkce insert: {e}");
+                    return HttpResponse::InternalServerError().finish();
+                }
+                if let Err(e) = session.insert(SESSION_KEY_NEXT, &next) {
+                    tracing::error!("session next insert: {e}");
+                    return HttpResponse::InternalServerError().finish();
+                }
+                return HttpResponse::Found()
+                    .append_header(("Location", auth.url.to_string()))
+                    .finish();
+            }
+            // Configured but the issuer isn't reachable yet. In prod, surface
+            // a retryable 503 rather than silently downgrading to DEV_AUTH;
+            // re-discovery fires on the next /status poll or login attempt.
+            // In dev, fall through to the DEV_AUTH path below.
+            None if !state.settings.dev_auth => {
+                return HttpResponse::ServiceUnavailable().json(serde_json::json!({
+                    "error": "auth provider not reachable; retry shortly"
+                }));
+            }
+            None => {}
         }
-        if let Err(e) = session.insert(SESSION_KEY_NONCE, auth.nonce.secret()) {
-            tracing::error!("session nonce insert: {e}");
-            return HttpResponse::InternalServerError().finish();
-        }
-        if let Err(e) = session.insert(SESSION_KEY_PKCE, auth.pkce_verifier.secret()) {
-            tracing::error!("session pkce insert: {e}");
-            return HttpResponse::InternalServerError().finish();
-        }
-        if let Err(e) = session.insert(SESSION_KEY_NEXT, &next) {
-            tracing::error!("session next insert: {e}");
-            return HttpResponse::InternalServerError().finish();
-        }
-        return HttpResponse::Found()
-            .append_header(("Location", auth.url.to_string()))
-            .finish();
     }
 
     if state.settings.dev_auth {
@@ -232,11 +248,11 @@ pub async fn callback(
     if state.settings.auth_rate_per_min > 0 && !state.auth_limit.check(&rate_key(&req)) {
         return rate_limited_resp();
     }
-    let oidc = match &state.oidc {
+    let oidc = match state.oidc.ctx().await {
         Some(o) => o,
         None => {
             return HttpResponse::ServiceUnavailable()
-                .json(serde_json::json!({"error": "oidc not configured"}));
+                .json(serde_json::json!({"error": "auth provider not reachable; retry shortly"}));
         }
     };
 

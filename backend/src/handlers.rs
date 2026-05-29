@@ -19,6 +19,12 @@ pub struct StatusResponse {
     pub upstream: bool,
     pub model_locked: bool,
     pub auth: &'static str,
+    /// True when OIDC env vars are set (a production auth deploy).
+    pub oidc_configured: bool,
+    /// True when the OIDC provider metadata is currently discovered and
+    /// usable. False while configured-but-unreachable — the signal a
+    /// healthcheck should alert on (prod + configured + !ready = broken).
+    pub oidc_ready: bool,
     pub refiner_available: bool,
     /// True when an img2img (image-edit) backend is wired up. Today
     /// that's ComfyUI Kontext via COMFYUI_URL. The UI uses this to
@@ -38,9 +44,17 @@ pub struct StatusResponse {
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
     let upstream = ollama::list_models(&state).await.is_ok();
+    // `oidc_ready` doubles as the self-heal driver: ctx() re-attempts
+    // discovery when the issuer was down at boot, so the regular /status
+    // poll recovers auth without a restart. Reported honestly so the failure
+    // is visible (status itself stays 200 — a 503 here would just make the
+    // orchestrator kill a container that can heal itself).
+    let oidc_configured = state.oidc.is_configured();
+    let oidc_ready = state.oidc.ctx().await.is_some();
+    // `auth` reflects the *resolved* state, not merely what's configured.
     let auth = if state.settings.dev_auth {
         "dev"
-    } else if state.settings.oidc.is_some() {
+    } else if oidc_ready {
         "oidc"
     } else {
         "none"
@@ -79,6 +93,8 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         upstream,
         model_locked: state.settings.ollama_model_lock.is_some(),
         auth,
+        oidc_configured,
+        oidc_ready,
         refiner_available: state.settings.prompt_refiner_model.is_some(),
         img2img_available: state.settings.comfyui_url.is_some(),
         voice_in_available: state.settings.whisper_url.is_some(),
