@@ -1509,6 +1509,30 @@ const RefineControl = ({
   const accent = refine ? theme.colors.activity.on : theme.colors.text.muted;
   const hasPersonas = personas.length > 0;
 
+  // The menu opens upward from a button pinned near the bottom of the
+  // viewport, so its ceiling is the space *above* the button — not the
+  // full page height. Measure the button's top on open (and on resize)
+  // and cap the menu to that, scrolling any overflow. Falls back to a
+  // viewport-relative guess on the first synchronous paint.
+  const [maxMenuH, setMaxMenuH] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const measure = () => {
+      const el = wrapRef.current;
+      if (!el) return;
+      // 8px gap above the button + an 8px breathing margin at the top.
+      // Measuring requires the laid-out DOM, so the synchronous set in
+      // this layout effect is intentional — it runs before paint, no flash.
+      // eslint-disable-next-line @eslint-react/set-state-in-effect
+      setMaxMenuH(
+        Math.max(160, Math.floor(el.getBoundingClientRect().top - 16)),
+      );
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [open]);
+
   useEffect(() => {
     if (!open) return;
     const onPointer = (e: PointerEvent) => {
@@ -1579,10 +1603,10 @@ const RefineControl = ({
               // Wider on desktop for readable persona descriptions,
               // clamped to the viewport so it never overflows sideways.
               maxWidth: "min(440px, calc(100vw - 24px))",
-              // Opens upward from the action row; on a short window the
-              // list would run off the top. Cap to the space above the
-              // composer and scroll the overflow.
-              maxHeight: "calc(100vh - 120px)",
+              // Cap to the measured space above the button so the
+              // upward-opening menu never runs off the top; scroll the
+              // overflow. mq[0] below overrides for the mobile sheet.
+              maxHeight: maxMenuH ? `${maxMenuH}px` : "calc(100vh - 120px)",
               overflowY: "auto",
               padding: 6,
               borderRadius: 12,
