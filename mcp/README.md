@@ -1,9 +1,10 @@
 # chat-mcp
 
 MCP bridge that exposes the chat backend's image generation endpoints
-(`/api/v1/img2img`, `/api/v1/inpaint`) as MCP tools. Forwards ComfyUI
-sampler progress as `notifications/progress` so well-behaved MCP
-clients don't time out during multi-minute renders.
+(`/api/v1/txt2img`, `/api/v1/img2img`, `/api/v1/inpaint`) as MCP tools.
+All three run on ComfyUI. Forwards ComfyUI sampler progress as
+`notifications/progress` so well-behaved MCP clients don't time out
+during multi-minute renders.
 
 Two transports are supported in the same binary:
 
@@ -16,16 +17,15 @@ Two transports are supported in the same binary:
 
 | Name | Backend | Description |
 |---|---|---|
-| `chat_list_image_models` | Ollama | Discover which models the backend exposes for `chat_txt2img`. |
-| `chat_txt2img` | Ollama | Generate a fresh image from a text prompt. Pick a model from the list tool. |
+| `chat_txt2img` | Z-Image Turbo (ComfyUI) | Generate a fresh image from a text prompt. Fixed workflow — no model picker; any `model` arg is ignored. |
 | `chat_img2img` | Flux Kontext (ComfyUI) | Edit one or more reference images using a natural-language prompt. |
 | `chat_inpaint` | Flux Fill (ComfyUI) | Repaint a masked region of an image; uses real CFG so negative prompts matter. |
 
-`chat_img2img` and `chat_inpaint` both expose a quality/speed knob
-(`steps`) in their tool description — the agent can pick a value
-when the user asks for "fast preview" vs "really good quality".
-`chat_txt2img` has no steps knob; Ollama's image surface doesn't
-expose sampler controls.
+All three expose a quality/speed knob (`steps`) and a `negative_prompt`
+in their tool description — the agent can pick a `steps` value when the
+user asks for "fast preview" vs "really good quality". `chat_txt2img`
+defaults to 8 steps (clamped 4–12); the distilled turbo model gains
+little past 8.
 
 ### Tool output shape
 
@@ -50,7 +50,6 @@ Backend knobs (set on the *backend* container, not chat-mcp):
 
 | Env | Default | Purpose |
 |---|---|---|
-| `CHAT_DEFAULT_IMAGE_MODEL` | unset | Ollama model used by `chat_txt2img` when the caller doesn't pass `model`. Without this, calls fail until the agent supplies one explicitly. Recommended: `x/flux2-klein:4b` or similar. |
 | `CHAT_IMAGE_BUFFER_TTL_SECS` | `1800` | How long renders live before sweep drops them. |
 | `CHAT_IMAGE_BUFFER_LIMIT` | `64` | Max entries before oldest is evicted on insert. |
 

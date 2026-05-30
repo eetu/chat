@@ -10,8 +10,10 @@ to [halo](../hcc) — same design tokens, different glyph, same warm orange dot.
 - Streaming token-by-token responses (SSE) with end-of-turn token / TPS stats
 - Per-user conversation history in SQLite (kanidm OIDC; dev fallback for local work)
 - Configurable retention (default 30 days)
-- Image generation via Ollama's `/v1/images/generations`, plus img2img through
-  ComfyUI Flux Kontext (multi-image references, live progress + preview)
+- Image generation entirely via ComfyUI — text-to-image (Z-Image Turbo),
+  reference-guided img2img (Flux Kontext, multi-image), and masked inpaint
+  (Flux Fill, in-browser mask editor), all with live progress + preview over
+  WebSocket. One server-level capability, independent of the selected chat model
 - Voice input via whisper.cpp with browser-side Web Audio VAD — utterances
   segment on silence and transcribe one at a time so dictation stays stable
 - Read-aloud via piper-tts (opus over chunked ogg) streamed straight into a
@@ -97,7 +99,7 @@ These features expect dedicated LAN endpoints, deployed via the sibling
 |---|---|---|
 | whisper.cpp HTTP server | `WHISPER_URL` (`/inference`) | Voice input transcription |
 | piper-tts | `PIPER_URL` (`POST /` returns chunked ogg/opus, `GET /voices` lists) | Read-aloud |
-| ComfyUI | `COMFYUI_URL` | Flux Kontext img2img with WS progress |
+| ComfyUI | `COMFYUI_URL` | All image generation: Z-Image Turbo txt2img, Flux Kontext img2img, Flux Fill inpaint — with WS progress |
 
 The chat features auto-detect availability via the `/status` payload — set
 each env var only when its endpoint is reachable; the matching UI hides
@@ -111,7 +113,7 @@ See `backend/.env.example` for the full list. Key values:
 |---|---|---|
 | `OLLAMA_URL` | `http://localhost:11434` | Upstream Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | unset | If set, locks all chats to this model and ignores client selection |
-| `COMFYUI_URL` | unset | Enables img2img via Flux Kontext when set |
+| `COMFYUI_URL` | unset | Enables all image generation (Z-Image txt2img, Flux Kontext img2img, Flux Fill inpaint). Image mode is unavailable when unset — no fallback. |
 | `PROMPT_REFINER_MODEL` | unset | Chat model that rewrites image-gen prompts before they hit the image runner |
 | `WHISPER_URL` | unset | whisper.cpp HTTP server (`/inference`) for voice input |
 | `PIPER_URL` | unset | piper-tts HTTP server (`POST /`) for read-aloud |
@@ -144,7 +146,7 @@ POST   /auth/logout                    clear session
 GET    /api/me                         { sub, username } or 401
 DELETE /api/me                         account self-delete (cascades all data)
 GET    /api/models                     installed Ollama models, filtered to those with chat caps
-GET    /api/models/caps?model=…        capability snapshot { vision, tools, chat, image_gen }
+GET    /api/models/caps?model=…        capability snapshot { vision, tools, chat, capabilities, families }
 GET    /api/personas                   list refiner-persona presets
 GET    /api/voices                     list piper voices (proxied)
 GET    /api/embedding-models           installed Ollama models with the `embedding` capability
@@ -158,6 +160,7 @@ GET    /api/conversations/{id}/messages
 DELETE /api/conversations/{id}/messages/{msg_id}            delete from row onward
 POST   /api/conversations/{id}/messages/{msg_id}/cancel     interrupt pending image job
 GET    /api/conversations/{id}/messages/{msg_id}/image/{idx}  blob (ETag + immutable cache)
+GET    /api/conversations/{id}/messages/{msg_id}/mask          inpaint mask blob
 
 GET    /api/documents                  list uploaded RAG documents
 POST   /api/documents                  { name, content_b64, mime?, model? } → Document
@@ -166,8 +169,11 @@ POST   /api/documents                  { name, content_b64, mime?, model? } → 
 DELETE /api/documents/{id}             cascade-delete document + chunks
 
 POST   /api/chat                       { conv_id, content, model?, images?, mode?,
-                                         refine?, persona?, retry_assistant_id?,
-                                         regenerate_from_user? } → SSE stream. Events:
+                                         refine?, persona?, sub_mode?, mask?,
+                                         negative?, retry_assistant_id?,
+                                         regenerate_from_user? } → SSE stream.
+                                         sub_mode ∈ txt2img|img2img|inpaint (omit to
+                                         infer from images/mask). Events:
                                          delta (raw text), done ({conv_id}),
                                          error ({message}), stats ({tokens,
                                          prompt_tokens, tokens_per_sec}),
@@ -176,6 +182,20 @@ POST   /api/chat                       { conv_id, content, model?, images?, mode
                                          preview ({mime, b64}), queued
 POST   /api/transcribe?lang=…          raw audio body → { text }  (whisper.cpp)
 POST   /api/tts                        { text, voice?, format? } → audio/ogg|wav (piper)
+```
+
+### `/api/v1` — stateless image API (MCP bridge)
+
+Bearer-auth (`CHAT_MCP_API_KEY`), no session, nothing persisted. Each
+generator returns an SSE stream (`progress` / `preview` / `done` /
+`error`); the render is stashed in a short-lived buffer fetched by uuid.
+See [`mcp/README.md`](mcp/README.md).
+
+```
+POST   /api/v1/txt2img                 { prompt, negative_prompt?, steps? } (Z-Image Turbo)
+POST   /api/v1/img2img                 { prompt, images[], steps? }         (Flux Kontext)
+POST   /api/v1/inpaint                 { prompt, image, mask, negative_prompt?, steps? } (Flux Fill)
+GET    /api/v1/images/{uuid}.png       fetch a buffered render (TTL ~30 min)
 ```
 
 ## Voice dictation
@@ -250,4 +270,3 @@ GitHub Actions in `.github/workflows/`:
 - [ ] Conversation export / import (JSON dump with image blobs)
 - [ ] sqlite-vec for RAG retrieval when the corpus outgrows in-memory cosine
 - [ ] OIDC RP-initiated logout (currently relies on provider session TTL)
-- [ ] Front-end test setup
