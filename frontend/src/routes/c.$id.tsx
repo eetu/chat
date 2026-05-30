@@ -215,11 +215,11 @@ const ChatView = () => {
     } else if (next?.role === "assistant") {
       const nextImg = (next.image_count ?? 0) + (next.images?.length ?? 0);
       mode = next.status === "error" || nextImg > 0 ? "image" : "chat";
-    } else if (caps?.image_gen && !caps?.chat) {
-      mode = "image";
-    } else if (caps?.chat && !caps?.image_gen) {
-      mode = "chat";
     }
+    // No image signal anywhere (a trailing user row with no reply) →
+    // leave mode undefined so the resend defaults to chat. Image gen is
+    // a server-level capability now, not a property of the picked model,
+    // so model caps can't disambiguate here.
     stickRef.current = true;
     setShowJump(false);
     void editAndResend(id, newContent, model ?? undefined, mode);
@@ -567,14 +567,12 @@ const ChatView = () => {
                 onDeleteFrom={deleteFrom}
                 onRegenerate={regenerate}
                 onRegenerateFromUser={(uid) => {
-                  // Pick the regeneration mode using whatever info is
-                  // available, in priority order:
-                  // 1. The reply that follows the user row (if any) —
-                  //    its image_count / status pinpoints original
-                  //    intent.
-                  // 2. The currently picked model's caps — image-only
-                  //    or chat-only models leave no choice.
-                  // 3. Default to chat.
+                  // Pick the regeneration mode from the reply that
+                  // follows the user row (if any) — its image_count /
+                  // status pinpoints the original intent. With no reply
+                  // to learn from, leave it undefined and let the resend
+                  // default to chat: image gen is a server capability
+                  // now, not a model property, so caps can't decide.
                   const tIdx = messages.findIndex((x) => x.id === uid);
                   const next = tIdx >= 0 ? messages[tIdx + 1] : undefined;
                   let modeOverride: "chat" | "image" | undefined;
@@ -585,10 +583,6 @@ const ChatView = () => {
                       next.status === "error" || imgCount > 0
                         ? "image"
                         : "chat";
-                  } else if (caps?.image_gen && !caps?.chat) {
-                    modeOverride = "image";
-                  } else if (caps?.chat && !caps?.image_gen) {
-                    modeOverride = "chat";
                   }
                   void regenerateFromUser(
                     uid,
@@ -669,8 +663,6 @@ const ChatView = () => {
           model={model}
           onModelChange={onModelChange}
           vision={caps?.vision ?? false}
-          chatCap={caps?.chat ?? true}
-          imageGen={caps?.image_gen ?? false}
           refinerAvailable={status?.refiner_available ?? false}
           img2imgAvailable={status?.img2img_available ?? false}
           voiceInAvailable={status?.voice_in_available ?? false}

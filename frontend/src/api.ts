@@ -30,7 +30,6 @@ export type ModelCapabilities = {
   vision: boolean;
   tools: boolean;
   chat: boolean;
-  image_gen: boolean;
   capabilities: string[];
   families: string[];
 };

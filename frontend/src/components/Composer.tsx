@@ -81,17 +81,17 @@ type Props = {
   model?: string | null;
   /** Called when the user picks a different model. */
   onModelChange?: (next: string) => void;
-  /** When true, the + image-attach button is shown for the current model. */
+  /** Whether the selected chat model can see attached images (vision).
+   * Gates the "look only" attachment route and, with no ComfyUI host,
+   * whether attaching is useful at all. */
   vision?: boolean;
-  /** Whether the model supports plain text chat output. */
-  chatCap?: boolean;
-  /** Whether the model supports image generation output. */
-  imageGen?: boolean;
   /** Whether the server has a prompt refiner model configured. */
   refinerAvailable?: boolean;
-  /** Whether the server has an img2img backend wired up (ComfyUI Kontext
-   * today). Drives the inline indicator under the attachment row —
-   * without it the backend silently falls back to Ollama txt2img. */
+  /** Whether the server has a ComfyUI host configured. This is the
+   * single gate for ALL image generation now — txt2img, img2img
+   * (Kontext) and inpaint (Flux Fill) all run on it, independent of
+   * the selected chat model. Drives the chat↔image mode control and
+   * the attachment-routing segments. */
   img2imgAvailable?: boolean;
   /** Whether the server can transcribe audio (whisper.cpp endpoint
    * configured). Drives the mic affordance in the action row. */
@@ -225,8 +225,6 @@ const Composer = ({
   model,
   onModelChange,
   vision,
-  chatCap = true,
-  imageGen = false,
   refinerAvailable = false,
   img2imgAvailable = false,
   voiceInAvailable = false,
@@ -248,18 +246,11 @@ const Composer = ({
     { base64: string; preview: string }[]
   >([]);
   const [dragOver, setDragOver] = useState(false);
-  const [mode, setMode] = useState<Mode>(
-    imageGen && !chatCap ? "image" : "chat",
-  );
-  // Reset mode when model caps change. Image-only model → image; otherwise
-  // default to chat (user can still toggle if both are supported).
-  const [lastCapsKey, setLastCapsKey] = useState(`${chatCap}|${imageGen}`);
-  const capsKey = `${chatCap}|${imageGen}`;
-  if (lastCapsKey !== capsKey) {
-    setLastCapsKey(capsKey);
-    setMode(imageGen && !chatCap ? "image" : "chat");
-  }
-  const showModeToggle = chatCap && imageGen;
+  // ComfyUI presence is the single gate for image generation now —
+  // every chat model can drive it, so mode is a pure user choice that
+  // no longer resets on model change.
+  const imageGenAvailable = img2imgAvailable;
+  const [mode, setMode] = useState<Mode>("chat");
   // Attachment-routing tri-state: "off" lets a vision chat model see
   // the image; "edit" hands it to ComfyUI Kontext (img2img); "inpaint"
   // pairs it with a user-drawn mask for the Flux Fill workflow. The
@@ -274,15 +265,26 @@ const Composer = ({
     persistAttachmentMode(next);
     writeAttachmentMode(next);
   };
+  const hasAttachment = attached.length > 0;
   // Inpaint is single-image only (Flux Fill expects exactly one base).
   // When the user piles on extra attachments, downshift to edit during
   // render so the composer doesn't sit in an unsubmittable state.
   // Render-phase setState mirrors the pattern already used for
-  // `lastCapsKey` / `lastModelKey` in this file.
+  // `lastModelKey` in this file.
   if (attachmentMode === "inpaint" && attached.length > 1) {
     setAttachmentMode("edit");
   }
-  const showAttachmentModeToggle = img2imgAvailable && attached.length > 0;
+  // Keep attachmentMode coherent with what the current model + server
+  // can actually do, so the unified mode control never lands on a
+  // segment it isn't rendering: "look only" needs a vision model;
+  // "edit"/"inpaint" need a ComfyUI host.
+  if (hasAttachment) {
+    if (attachmentMode === "off" && !vision && imageGenAvailable) {
+      setAttachmentMode("edit");
+    } else if (attachmentMode !== "off" && !imageGenAvailable) {
+      setAttachmentMode("off");
+    }
+  }
   // Mask drawn by the user via MaskEditor. Cleared whenever the
   // attachment list changes (re-pick → re-mask), the toggle leaves
   // inpaint, or after a successful submit.
@@ -307,11 +309,19 @@ const Composer = ({
     setLastAttachmentMode(attachmentMode);
     if (attachmentMode !== "inpaint") setMask(null);
   }
-  // Effective send-time mode: any non-"off" attachment mode with at
-  // least one image promotes to image-gen. A stale toggle without an
-  // attachment falls back to whatever the chat/image mode toggle says.
-  const effectiveMode: Mode =
-    attachmentMode !== "off" && attached.length > 0 ? "image" : mode;
+  // Effective send-time mode. With an attachment the routing segment
+  // decides: "look only" (off) is the vision-chat path, edit/inpaint
+  // are image gen. With no attachment it's the plain chat↔image choice.
+  const effectiveMode: Mode = hasAttachment
+    ? attachmentMode === "off"
+      ? "chat"
+      : "image"
+    : mode;
+  // Routing only means anything with an image in hand. Without one the
+  // persisted attachmentMode (e.g. a stale "inpaint" from a prior turn)
+  // is irrelevant — collapse it to "off" so txt2img isn't mistaken for
+  // an unsatisfiable inpaint and the send button stays live.
+  const routeMode: AttachmentMode = hasAttachment ? attachmentMode : "off";
   const [refine, setRefine] = useState<boolean>(() => {
     try {
       const v = window.localStorage.getItem(REFINE_KEY);
@@ -339,19 +349,15 @@ const Composer = ({
       return "default";
     }
   });
-  // Negative-prompt override. Only effective when the workflow runs
-  // real CFG (Flux Fill inpaint today); for Kontext at cfg=1 the
-  // backend ignores it. Surfaced behind a "show negative" toggle so
-  // it doesn't crowd the basic image-prompt flow.
+  // Negative-prompt override. Effective on the real-CFG paths: Z-Image
+  // txt2img (cfg 2.0) and Flux Fill inpaint (cfg 3.5). Kontext img2img
+  // runs at cfg=1 and ignores it, so we hide the control there to avoid
+  // implying it does something. Surfaced behind a "show negative"
+  // toggle so it doesn't crowd the basic image-prompt flow.
   const [negative, setNegative] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
   const showNegativeToggle =
-    effectiveMode === "image" && attachmentMode === "inpaint";
-  const showPersonaPicker =
-    effectiveMode === "image" &&
-    refinerAvailable &&
-    refine &&
-    personas.length > 0;
+    effectiveMode === "image" && !(hasAttachment && attachmentMode === "edit");
   const onPersonaChange = (next: string) => {
     setPersona(next);
     try {
@@ -670,19 +676,19 @@ const Composer = ({
     // Inpaint without a mask is a guaranteed 400 on the backend. Block
     // at the boundary so the user gets the hint instead of a silent
     // request failure.
-    if (effectiveMode === "image" && attachmentMode === "inpaint" && !mask) {
+    if (effectiveMode === "image" && routeMode === "inpaint" && !mask) {
       return;
     }
     const imgs =
       attached.length > 0 ? attached.map((a) => a.base64) : undefined;
     let subMode: SubMode | undefined;
     if (effectiveMode === "image") {
-      if (attachmentMode === "inpaint") subMode = "inpaint";
-      else if (attachmentMode === "edit") subMode = "img2img";
+      if (routeMode === "inpaint") subMode = "inpaint";
+      else if (routeMode === "edit") subMode = "img2img";
       else if (!imgs) subMode = "txt2img";
     }
     const maskPayload =
-      effectiveMode === "image" && attachmentMode === "inpaint" && mask
+      effectiveMode === "image" && routeMode === "inpaint" && mask
         ? mask.base64
         : undefined;
     const negativeTrim = negative.trim();
@@ -727,9 +733,50 @@ const Composer = ({
   };
 
   // Attach affordances surface whenever an image can flow somewhere: a
-  // vision-capable chat model, an image-gen model, or the img2img path
-  // (ComfyUI Kontext, model-independent).
-  const canAttach = vision || imageGen || img2imgAvailable;
+  // vision-capable chat model can look at it, or a ComfyUI host can
+  // edit/inpaint it (model-independent).
+  const canAttach = vision || imageGenAvailable;
+
+  // Unified mode control. With no attachment it's a plain chat↔image
+  // switch (shown only when ComfyUI can actually generate). With an
+  // attachment it becomes the routing picker — look (vision chat) /
+  // edit (Kontext) / inpaint (Flux Fill) — each segment gated on the
+  // capability that backs it. One control, context-dependent segments,
+  // replacing the old separate mode toggle + attachment-mode pill.
+  type ModeSegment = { value: string; icon: string; label: string };
+  let modeSegments: ModeSegment[];
+  let modeValue: string;
+  let onModeSegment: (v: string) => void;
+  if (hasAttachment) {
+    const segs: ModeSegment[] = [];
+    if (vision) {
+      segs.push({ value: "off", icon: "visibility", label: "look only" });
+    }
+    if (imageGenAvailable) {
+      segs.push({
+        value: "edit",
+        icon: "auto_awesome",
+        label: "edit (img2img)",
+      });
+      if (attached.length === 1) {
+        segs.push({ value: "inpaint", icon: "brush", label: "inpaint mask" });
+      }
+    }
+    modeSegments = segs;
+    modeValue = attachmentMode;
+    onModeSegment = (v) => setAttachmentMode(v as AttachmentMode);
+  } else {
+    modeSegments = [
+      { value: "chat", icon: "chat_bubble_outline", label: "chat" },
+      { value: "image", icon: "image", label: "image" },
+    ];
+    modeValue = mode;
+    onModeSegment = (v) => setMode(v as Mode);
+  }
+  const showModeControl = hasAttachment
+    ? modeSegments.length > 1
+    : imageGenAvailable;
+
   const onDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
     if (!canAttach) return;
     if (!Array.from(e.dataTransfer.types).includes("Files")) return;
@@ -898,7 +945,7 @@ const Composer = ({
   );
 
   const inpaintReady =
-    !(effectiveMode === "image" && attachmentMode === "inpaint") || !!mask;
+    !(effectiveMode === "image" && routeMode === "inpaint") || !!mask;
   const canSend =
     (!!value.trim() || attached.length > 0) && !streaming && inpaintReady;
 
@@ -1145,7 +1192,7 @@ const Composer = ({
                   ref={fileInputRef}
                   type="file"
                   accept="image/*"
-                  multiple={mode === "chat"}
+                  multiple={attachmentMode !== "inpaint"}
                   onChange={(e) => {
                     void onPickFiles(e.target.files);
                     e.target.value = "";
@@ -1154,9 +1201,7 @@ const Composer = ({
                 />
                 <button
                   type="button"
-                  aria-label={
-                    mode === "image" ? "attach image to edit" : "attach image"
-                  }
+                  aria-label="attach image"
                   onClick={() => fileInputRef.current?.click()}
                   css={composerSubButtonCss(theme)}
                 >
@@ -1245,64 +1290,39 @@ const Composer = ({
                 )}
               </>
             )}
-            {showModeToggle && (
+            {showModeControl && (
+              <SegmentedToggle
+                ariaLabel={hasAttachment ? "attachment mode" : "send mode"}
+                segments={modeSegments}
+                value={modeValue}
+                onChange={onModeSegment}
+                theme={theme}
+              />
+            )}
+            {hasAttachment && attachmentMode === "inpaint" && (
               <button
                 type="button"
-                aria-label={
-                  mode === "chat"
-                    ? "switch to image generation"
-                    : "switch to chat"
-                }
+                aria-label={mask ? "edit mask" : "draw mask"}
                 title={
-                  mode === "chat"
-                    ? "switch to image generation"
-                    : "switch to chat"
+                  mask
+                    ? "edit mask — open the painter to refine the region"
+                    : "draw mask — pick the region to repaint"
                 }
-                onClick={() => setMode(mode === "chat" ? "image" : "chat")}
-                css={composerSubButtonCss(theme)}
+                onClick={() => setMaskEditorOpen(true)}
+                css={{
+                  ...composerSubButtonCss(theme),
+                  color: mask
+                    ? theme.colors.activity.on
+                    : theme.colors.text.muted,
+                }}
               >
                 <span
                   className="material-symbols-outlined"
                   css={{ fontSize: 22 }}
                 >
-                  {mode === "chat" ? "image" : "chat_bubble_outline"}
+                  {mask ? "brush" : "edit"}
                 </span>
               </button>
-            )}
-            {showAttachmentModeToggle && (
-              <>
-                <AttachmentModeToggle
-                  mode={attachmentMode}
-                  onChange={setAttachmentMode}
-                  canInpaint={attached.length === 1}
-                  theme={theme}
-                />
-                {attachmentMode === "inpaint" && (
-                  <button
-                    type="button"
-                    aria-label={mask ? "edit mask" : "draw mask"}
-                    title={
-                      mask
-                        ? "edit mask — open the painter to refine the region"
-                        : "draw mask — pick the region to repaint"
-                    }
-                    onClick={() => setMaskEditorOpen(true)}
-                    css={{
-                      ...composerSubButtonCss(theme),
-                      color: mask
-                        ? theme.colors.activity.on
-                        : theme.colors.text.muted,
-                    }}
-                  >
-                    <span
-                      className="material-symbols-outlined"
-                      css={{ fontSize: 22 }}
-                    >
-                      {mask ? "brush" : "edit"}
-                    </span>
-                  </button>
-                )}
-              </>
             )}
             {showNegativeToggle && (
               <button
@@ -1337,7 +1357,7 @@ const Composer = ({
               <RefineControl
                 refine={refine}
                 onToggleRefine={toggleRefine}
-                personas={showPersonaPicker ? personas : []}
+                personas={personas}
                 persona={persona}
                 onPersonaChange={onPersonaChange}
               />
@@ -1348,7 +1368,7 @@ const Composer = ({
               <ModelPicker
                 value={model ?? null}
                 onChange={onModelChange}
-                disabled={attachmentMode !== "off" && attached.length > 0}
+                disabled={effectiveMode === "image"}
               />
             )}
             {streaming && onStop ? (
@@ -1404,30 +1424,26 @@ const Composer = ({
   );
 };
 
-const AttachmentModeToggle = ({
-  mode,
+const SegmentedToggle = ({
+  segments,
+  value,
   onChange,
-  canInpaint,
+  ariaLabel,
   theme,
 }: {
-  mode: AttachmentMode;
-  onChange: (next: AttachmentMode) => void;
-  canInpaint: boolean;
+  segments: { value: string; icon: string; label: string }[];
+  value: string;
+  onChange: (next: string) => void;
+  ariaLabel: string;
   theme: Theme;
 }) => {
-  // Three-state pill: off / edit / inpaint. Hidden inpaint when more
-  // than one image is attached — Flux Fill takes exactly one base.
-  const choices: { value: AttachmentMode; icon: string; label: string }[] = [
-    { value: "off", icon: "visibility", label: "look only" },
-    { value: "edit", icon: "auto_awesome", label: "edit (img2img)" },
-  ];
-  if (canInpaint) {
-    choices.push({ value: "inpaint", icon: "brush", label: "inpaint mask" });
-  }
+  // Generic icon segmented pill. Backs both the chat↔image switch and
+  // the attachment-routing picker (look / edit / inpaint) — the caller
+  // supplies the segment set for the current context.
   return (
     <div
       role="radiogroup"
-      aria-label="attachment mode"
+      aria-label={ariaLabel}
       css={{
         display: "inline-flex",
         alignItems: "center",
@@ -1438,8 +1454,8 @@ const AttachmentModeToggle = ({
         border: `1px solid ${theme.colors.border}`,
       }}
     >
-      {choices.map((c) => {
-        const active = mode === c.value;
+      {segments.map((c) => {
+        const active = value === c.value;
         return (
           <button
             key={c.value}
@@ -1490,8 +1506,8 @@ const RefineControl = ({
   const theme = useTheme();
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
-  const showChevron = personas.length > 0;
   const accent = refine ? theme.colors.activity.on : theme.colors.text.muted;
+  const hasPersonas = personas.length > 0;
 
   useEffect(() => {
     if (!open) return;
@@ -1531,92 +1547,27 @@ const RefineControl = ({
           }}
         />
       )}
-      <div
-        ref={wrapRef}
-        className="refine-control"
-        css={{
-          position: "relative",
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 0,
-          ...(showChevron && {
-            "& .refine-chevron": {
-              opacity: 0,
-              width: 0,
-              transition: "opacity 120ms ease, width 120ms ease",
-              pointerEvents: "none",
-            },
-            "&:hover .refine-chevron, &:focus-within .refine-chevron": {
-              opacity: 1,
-              width: 18,
-              pointerEvents: "auto",
-            },
-            "@media (hover: none)": {
-              "& .refine-chevron": {
-                opacity: 1,
-                width: 18,
-                pointerEvents: "auto",
-              },
-            },
-          }),
-          ...(open && {
-            "& .refine-chevron": {
-              opacity: 1,
-              width: 18,
-              pointerEvents: "auto",
-            },
-          }),
-        }}
-      >
+      <div ref={wrapRef} css={{ position: "relative", display: "inline-flex" }}>
+        {/* One affordance: opens a popover holding both the refine
+            on/off switch and (when configured) the persona picker.
+            No hover-only chevron — everything lives behind a click. */}
         <button
           type="button"
-          aria-label={refine ? "refine prompt: on" : "refine prompt: off"}
+          aria-label="image prompt options"
+          aria-haspopup="menu"
+          aria-expanded={open}
           title={
             refine
-              ? "prompt refiner is on — model expands the prompt before generation"
-              : "prompt refiner is off — model describes the result for next-turn context"
+              ? "prompt refiner on — click for options"
+              : "prompt refiner off — click for options"
           }
-          aria-pressed={refine}
-          onClick={onToggleRefine}
-          css={{
-            ...composerSubButtonCss(theme),
-            color: accent,
-          }}
+          onClick={() => setOpen((v) => !v)}
+          css={{ ...composerSubButtonCss(theme), color: accent }}
         >
           <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
             auto_fix_high
           </span>
         </button>
-        {showChevron && (
-          <button
-            type="button"
-            className="refine-chevron"
-            aria-label="choose prompt persona"
-            aria-haspopup="menu"
-            aria-expanded={open}
-            title={
-              personas.find((p) => p.id === persona)?.label ?? "prompt persona"
-            }
-            onClick={() => setOpen((v) => !v)}
-            css={{
-              height: 28,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "none",
-              background: "transparent",
-              color: accent,
-              cursor: "pointer",
-              padding: 0,
-              overflow: "hidden",
-              "&:hover": { color: theme.colors.text.main },
-            }}
-          >
-            <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
-              {open ? "expand_less" : "expand_more"}
-            </span>
-          </button>
-        )}
         {open && (
           <div
             role="menu"
@@ -1624,8 +1575,15 @@ const RefineControl = ({
               position: "absolute",
               bottom: "calc(100% + 8px)",
               left: 0,
-              minWidth: 240,
-              maxWidth: 320,
+              minWidth: 280,
+              // Wider on desktop for readable persona descriptions,
+              // clamped to the viewport so it never overflows sideways.
+              maxWidth: "min(440px, calc(100vw - 24px))",
+              // Opens upward from the action row; on a short window the
+              // list would run off the top. Cap to the space above the
+              // composer and scroll the overflow.
+              maxHeight: "calc(100vh - 120px)",
+              overflowY: "auto",
               padding: 6,
               borderRadius: 12,
               border: `1px solid ${theme.colors.border}`,
@@ -1650,61 +1608,133 @@ const RefineControl = ({
               },
             }}
           >
-            {personas.map((p) => {
-              const selected = p.id === persona;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={selected}
-                  onClick={() => {
-                    onPersonaChange(p.id);
-                    setOpen(false);
-                  }}
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={refine}
+              onClick={onToggleRefine}
+              css={{
+                textAlign: "left",
+                border: "none",
+                borderRadius: 8,
+                padding: "8px 10px",
+                background: "transparent",
+                color: theme.colors.text.main,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                "&:hover": { background: theme.colors.background.light },
+                [mq[0]]: { padding: "12px 14px" },
+              }}
+            >
+              <div
+                css={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 2,
+                  flex: 1,
+                }}
+              >
+                <span css={{ ...theme.typography.body2, fontWeight: 600 }}>
+                  refine prompt
+                </span>
+                <span
                   css={{
-                    textAlign: "left",
-                    border: "none",
-                    borderRadius: 8,
-                    padding: "8px 10px",
-                    background: selected
-                      ? theme.colors.activity.onSoft
-                      : "transparent",
-                    color: theme.colors.text.main,
-                    cursor: "pointer",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 2,
-                    "&:hover": {
-                      background: selected
-                        ? theme.colors.activity.onSoft
-                        : theme.colors.background.light,
-                    },
-                    [mq[0]]: {
-                      padding: "12px 14px",
-                      gap: 4,
-                    },
+                    ...theme.typography.caption,
+                    color: theme.colors.text.muted,
                   }}
                 >
-                  <span
-                    css={{
-                      ...theme.typography.body2,
-                      fontWeight: selected ? 600 : 500,
-                    }}
-                  >
-                    {p.label}
-                  </span>
-                  <span
-                    css={{
-                      ...theme.typography.caption,
-                      color: theme.colors.text.muted,
-                    }}
-                  >
-                    {p.description}
-                  </span>
-                </button>
-              );
-            })}
+                  {refine
+                    ? "model expands your prompt before generating"
+                    : "your prompt is sent to the image model as-is"}
+                </span>
+              </div>
+              <span
+                className="material-symbols-outlined"
+                css={{ fontSize: 28, color: accent }}
+              >
+                {refine ? "toggle_on" : "toggle_off"}
+              </span>
+            </button>
+            {hasPersonas && (
+              <>
+                <div
+                  css={{
+                    height: 1,
+                    background: theme.colors.border,
+                    margin: "4px 0",
+                  }}
+                />
+                <span
+                  css={{
+                    ...theme.typography.caption,
+                    color: theme.colors.text.muted,
+                    fontFamily: theme.fonts.heading,
+                    padding: "2px 10px",
+                  }}
+                >
+                  persona{!refine && " · enable refine to use"}
+                </span>
+                {personas.map((p) => {
+                  const selected = p.id === persona;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={selected}
+                      disabled={!refine}
+                      onClick={() => {
+                        onPersonaChange(p.id);
+                        setOpen(false);
+                      }}
+                      css={{
+                        textAlign: "left",
+                        border: "none",
+                        borderRadius: 8,
+                        padding: "8px 10px",
+                        background: selected
+                          ? theme.colors.activity.onSoft
+                          : "transparent",
+                        color: theme.colors.text.main,
+                        cursor: refine ? "pointer" : "not-allowed",
+                        opacity: refine ? 1 : 0.45,
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: 2,
+                        "&:hover": {
+                          background:
+                            selected || !refine
+                              ? selected
+                                ? theme.colors.activity.onSoft
+                                : "transparent"
+                              : theme.colors.background.light,
+                        },
+                        [mq[0]]: { padding: "12px 14px", gap: 4 },
+                      }}
+                    >
+                      <span
+                        css={{
+                          ...theme.typography.body2,
+                          fontWeight: selected ? 600 : 500,
+                        }}
+                      >
+                        {p.label}
+                      </span>
+                      <span
+                        css={{
+                          ...theme.typography.caption,
+                          color: theme.colors.text.muted,
+                        }}
+                      >
+                        {p.description}
+                      </span>
+                    </button>
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
       </div>

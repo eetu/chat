@@ -1071,9 +1071,30 @@ pub async fn chat(
         //              request validation above guarantees exactly one
         //              image and a present mask).
         // - kontext  → ComfyUI Flux Kontext with ≥1 reference image.
-        // - ollama   → text→image fallback (no attachments or no
-        //              ComfyUI host configured).
+        // - txt2img  → ComfyUI Z-Image Turbo (no attachments).
+        // All three run on ComfyUI; there is no Ollama image fallback.
         let comfy_available = state.settings.comfyui_url.is_some();
+        if !comfy_available {
+            // No ComfyUI host → no image generation. Mark the pending
+            // row errored and surface a clean SSE error rather than
+            // falling back to Ollama's unstable imagegen path.
+            if let Err(e) = state
+                .storage
+                .fail_message(pending_id, "image generation unavailable")
+            {
+                tracing::error!("failed to mark image message errored: {e}");
+            }
+            let _ = tx
+                .send(Ok(ollama::sse_json(
+                    "error",
+                    &serde_json::json!({"message": "image generation unavailable"}),
+                )))
+                .await;
+            let stream = ReceiverStream::new(rx);
+            return Ok(
+                sse::Sse::from_stream(stream).with_keep_alive(std::time::Duration::from_secs(30))
+            );
+        }
         let kontext_inputs: Vec<String> = match (comfy_available, body.images.as_ref()) {
             (true, Some(v)) if !v.is_empty() => v.clone(),
             _ => Vec::new(),
@@ -1087,9 +1108,11 @@ pub async fn chat(
             (true, true, Some(base), Some(m)) => Some((base.clone(), m.clone())),
             _ => None,
         };
-        let use_inpaint = inpaint_inputs.is_some();
-        let use_kontext = !use_inpaint && !kontext_inputs.is_empty();
-        let use_comfy = use_inpaint || use_kontext;
+        // Every image path now runs on ComfyUI (inpaint / kontext /
+        // txt2img), so the evict-before + free-after VRAM dance applies
+        // unconditionally. Guaranteed true here — !comfy_available
+        // returned above.
+        let use_comfy = comfy_available;
         let image_sem = state.image_sem.clone();
         tokio::spawn(async move {
             // Hold a permit for the duration of this image job. With the
@@ -1181,13 +1204,20 @@ pub async fn chat(
             };
             // Negative-prompt precedence: explicit client override wins;
             // otherwise the refiner's generated negative (when refine
-            // ran); empty when neither. Only inpaint applies it today
-            // — Kontext drops it on the floor because cfg=1 squashes
-            // the negative branch.
+            // ran); otherwise a baseline default so image gen always has
+            // one. Inpaint and Z-Image txt2img both run real CFG, so the
+            // negative influences sampling. Kontext still squashes it
+            // (cfg=1) but accepts the argument harmlessly.
             let negative_text: String = body_negative
                 .clone()
-                .or_else(|| refined.as_ref().map(|r| r.negative.clone()))
-                .unwrap_or_default();
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    refined
+                        .as_ref()
+                        .map(|r| r.negative.clone())
+                        .filter(|s| !s.trim().is_empty())
+                })
+                .unwrap_or_else(|| personas::DEFAULT_NEGATIVE.to_string());
             let final_prompt = composed_prompt.as_str();
 
             // Wire cancellation: when the SSE client disconnects, the
@@ -1242,26 +1272,19 @@ pub async fn chat(
                 )
                 .await
             } else {
-                // Race the Ollama image POST against client disconnect.
-                // There's no public cancel endpoint upstream, but
-                // dropping the reqwest future closes the connection —
-                // which is enough to stop the response from landing in
-                // storage. If Ollama keeps generating server-side it's
-                // a sunk cost; the bytes never reach the user.
-                let cancel_ollama = tx.clone();
-                tokio::select! {
-                    r = ollama::generate_image(
-                        &state_clone,
-                        &model_for_gen,
-                        final_prompt,
-                    ) => r,
-                    _ = cancel_ollama.closed() => {
-                        tracing::info!(
-                            "ollama image gen cancelled by client"
-                        );
-                        Err(ollama::ChatStreamError::Cancelled)
-                    }
-                }
+                // No reference image / mask → pure text-to-image via
+                // ComfyUI Z-Image Turbo. The refiner's generated
+                // negative now feeds a real-CFG path (cfg 2.0), so the
+                // negative actually influences the render.
+                comfyui::generate_txt2img(
+                    &state_clone,
+                    final_prompt,
+                    &negative_text,
+                    chat_shared::DEFAULT_TXT2IMG_STEPS,
+                    cancel_fut,
+                    Some(progress_cb),
+                )
+                .await
             };
             match gen_result {
                 Ok(b64) => {

@@ -96,7 +96,6 @@ pub struct ModelCapabilities {
     pub vision: bool,
     pub tools: bool,
     pub chat: bool,
-    pub image_gen: bool,
     pub capabilities: Vec<String>,
     pub families: Vec<String>,
 }
@@ -140,7 +139,6 @@ pub async fn show_capabilities(
         .any(|f| matches!(f.as_str(), "clip" | "mllama" | "vision" | "siglip"));
     let vision = parsed.capabilities.iter().any(|c| c == "vision") || vision_family;
     let tools = parsed.capabilities.iter().any(|c| c == "tools");
-    let image_gen = parsed.capabilities.iter().any(|c| c == "image");
     // Default `chat` to true when the capabilities array is empty (older
     // Ollama versions never populated it), so existing models keep working.
     let chat = parsed.capabilities.is_empty()
@@ -149,55 +147,9 @@ pub async fn show_capabilities(
         vision,
         tools,
         chat,
-        image_gen,
         capabilities: parsed.capabilities,
         families,
     })
-}
-
-#[derive(Debug, Deserialize)]
-struct ImagesResponse {
-    data: Vec<ImagesDatum>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ImagesDatum {
-    #[serde(default)]
-    b64_json: Option<String>,
-}
-
-/// Call Ollama's experimental OpenAI-compatible image generation endpoint.
-/// Returns the raw base64 (no `data:` prefix).
-pub async fn generate_image(
-    state: &AppState,
-    model: &str,
-    prompt: &str,
-) -> Result<String, ChatStreamError> {
-    let url = format!(
-        "{}/v1/images/generations",
-        state.settings.ollama_url.trim_end_matches('/')
-    );
-    let body = serde_json::json!({
-        "model": model,
-        "prompt": prompt,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-    });
-    let res = state
-        .http_client
-        .post(&url)
-        .json(&body)
-        .send()
-        .await
-        .map_err(ChatStreamError::Http)?
-        .error_for_status()
-        .map_err(ChatStreamError::Http)?;
-    let parsed: ImagesResponse = res.json().await.map_err(ChatStreamError::Http)?;
-    parsed
-        .data
-        .into_iter()
-        .find_map(|d| d.b64_json)
-        .ok_or(ChatStreamError::EmptyImage)
 }
 
 #[derive(Debug, Deserialize)]

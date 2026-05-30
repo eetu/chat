@@ -165,7 +165,6 @@ pub fn create_app(
                 .route("/txt2img", web::post().to(handlers_api::txt2img))
                 .route("/img2img", web::post().to(handlers_api::img2img))
                 .route("/inpaint", web::post().to(handlers_api::inpaint))
-                .route("/models/image", web::get().to(handlers_api::list_image_models))
                 .route("/images/{id}", web::get().to(handlers_api::get_image)),
         )
         .service(

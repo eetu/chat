@@ -50,12 +50,20 @@ struct Txt2ImgArgs {
     /// Natural-language description of the image. Example: "A photo
     /// of a snowy mountain at golden hour, dramatic lighting".
     prompt: String,
-    /// Ollama model name to use, e.g. `gemma3:4b-image`. Optional —
-    /// the backend falls back to its configured default
-    /// (`OLLAMA_MODEL` env) when unset. Call `chat_list_image_models`
-    /// first to discover what's installed.
+    /// Ignored. txt2img is fixed to the ComfyUI Z-Image Turbo flow;
+    /// there is no model picker. Retained for API compatibility.
     #[serde(default)]
     model: Option<String>,
+    /// Optional negative prompt — Z-Image runs real CFG so this
+    /// actually influences sampling. Example: "blurry, low quality,
+    /// deformed".
+    #[serde(default)]
+    negative_prompt: Option<String>,
+    /// Sampler steps. Z-Image Turbo is distilled — defaults to 8,
+    /// clamped to 4–12 server-side. Higher adds latency with little
+    /// quality gain.
+    #[serde(default)]
+    steps: Option<u32>,
     /// See `Img2ImgArgs::inline`. Default false — return URL only.
     #[serde(default)]
     inline: bool,
@@ -136,38 +144,14 @@ impl ChatImageTools {
     }
 
     #[tool(
-        name = "chat_list_image_models",
-        description = "List the Ollama models currently installed on the chat backend that advertise the `image` capability — i.e. those usable with `chat_txt2img`. Call this first when the user asks for txt2img with a specific style or you need to verify a model is available. Result is a JSON array of {name, families}; pass an entry's `name` straight to `chat_txt2img`.
-
-This does NOT list ComfyUI workflows. `chat_img2img` (Flux Kontext) and `chat_inpaint` (Flux Fill) have fixed model selections at the workflow level — no model picker for those.
-
-Cheap to call repeatedly; the backend caches Ollama capability lookups for 5 minutes.",
-        annotations(
-            title = "List image models",
-            read_only_hint = true,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = true,
-        )
-    )]
-    async fn chat_list_image_models(&self) -> Result<CallToolResult, ErrorData> {
-        match self.backend.list_image_models().await {
-            Ok(resp) => Content::json(resp).map(|c| CallToolResult::success(vec![c])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
-        }
-    }
-
-    #[tool(
         name = "chat_txt2img",
-        description = "**IMPORTANT: If `model` is not provided, the backend uses a configured default. When no default is set, this call fails with an actionable error directing you to `chat_list_image_models`. When in doubt about which model to use, call `chat_list_image_models` first.**
-
-Generate an image from a text prompt using Ollama's image-generation endpoint.
+        description = "Generate an image from a text prompt using the ComfyUI Z-Image Turbo flow. There is no model picker — the workflow is fixed (the `model` parameter is ignored).
 
 Use this when the user wants a fresh image and has not provided any reference image. If they DID provide a reference image they want edited, use `chat_img2img` instead. If they want a region of an existing image repainted under a mask, use `chat_inpaint`.
 
 By default the result contains a fetch URL only — the PNG bytes are NOT in your context. Set `inline: true` when you need to see the result to reason about it (chained edits, visual critique).
 
-No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical render takes 15-60s warm, plus a model-load tax on cold start.",
+`negative_prompt` rides a real-CFG negative branch and influences output. `steps` defaults to 8 (clamped 4–12); the distilled turbo model gains little past 8. Typical render takes ~10-30s warm, plus a model-load tax (~5-15s) on cold start.",
         annotations(
             title = "Generate image from text",
             read_only_hint = false,
@@ -184,6 +168,8 @@ No `steps` knob — Ollama's image API doesn't expose sampler controls. Typical 
         let body = Txt2ImgRequest {
             prompt: args.prompt,
             model: args.model,
+            negative_prompt: args.negative_prompt,
+            steps: args.steps,
         };
         run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body), args.inline).await
     }
@@ -283,26 +269,21 @@ impl ServerHandler for ChatImageTools {
             capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Image generation tools for the chat backend. Three generators \
-                 (chat_txt2img, chat_img2img, chat_inpaint) and one discovery \
-                 tool (chat_list_image_models).\n\n\
+                "Image generation tools for the chat backend. Three generators: \
+                 chat_txt2img, chat_img2img, chat_inpaint.\n\n\
                  USAGE NOTES:\n\
-                 - chat_txt2img is Ollama-backed. If you don't pass `model`, \
-                   the backend uses CHAT_DEFAULT_IMAGE_MODEL; if that's unset \
-                   it will reject the call with an actionable error pointing \
-                   you at chat_list_image_models. When in doubt, call \
-                   chat_list_image_models first.\n\
-                 - chat_img2img and chat_inpaint are ComfyUI-backed with \
-                   fixed workflow models (Flux Kontext / Flux Fill). No \
-                   `model` parameter for those.\n\
+                 - All three are ComfyUI-backed with fixed workflow models \
+                   (Z-Image Turbo for txt2img, Flux Kontext for img2img, Flux \
+                   Fill for inpaint). There is no model picker — any `model` \
+                   parameter is ignored.\n\
                  - Results return a fetch URL by default; the PNG bytes are \
                    NOT in your context. URLs expire after ~30 min. Pass \
                    `inline: true` when you need to see the image yourself \
                    (chained edits, visual critique) — that's the only time \
                    the bytes enter your context window.\n\
-                 - All three generators support a `steps` knob (except \
-                   txt2img — Ollama doesn't expose sampler controls). Low \
-                   steps = fast draft, high steps = better quality."
+                 - All three support a `steps` knob (low = fast draft, high = \
+                   better quality) and a `negative_prompt` that influences \
+                   sampling via real CFG."
                     .into(),
             ),
         }
