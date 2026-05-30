@@ -23,18 +23,36 @@ pub struct PersonaInfo {
     pub description: &'static str,
 }
 
-const ARTEFACT_TAIL: &str = "\n\nReduce common diffusion artefacts. Hands are the hardest case: \
-if a hand would be visible only partially, awkwardly, or in close-up where individual fingers \
-must be drawn, prefer to hide it — frame the hand out of shot, tuck it behind an object, in a \
-pocket, in a sleeve, or use a composition that doesn't require it. When a hand is shown, state \
-explicitly that it has exactly five fingers in a relaxed natural pose, no extra digits, no \
-fused fingers, no warped knuckles. For faces: symmetric features, two eyes with matching gaze, \
-balanced ears, no doubled mouths. For bodies and creatures: coherent limb count, anatomically \
-plausible proportions, joints in the right places. For text on signs or labels: keep it short \
-and legible or omit it. Clean edges where objects meet.\n\nLead the rewritten prompt with these \
-artefact-reduction rules before composition and style — diffusion attention skews to early \
-tokens. Then specify composition, lighting, materials, and mood. Output one paragraph, plain \
-text. No preamble, no quotes, no markdown, no commentary.";
+// Shared tail appended to every persona voice. Tuned for the Z-Image
+// Turbo txt2img backend: its Qwen3-4B text encoder follows natural
+// descriptive prose and was trained on clean data, so booster/keyword
+// spam and front-loaded negation lists hurt rather than help. Lead with
+// the scene, frame anatomy care positively, and never stack quality
+// tags. This also suits Flux's T5 encoder on the Kontext / inpaint
+// paths, so all three workflows share one tail.
+const ARTEFACT_TAIL: &str = "\n\nWrite the rewritten prompt as natural descriptive prose — \
+full sentences describing the scene, never a comma-separated pile of keywords or quality \
+tags. Do not add booster words such as \"masterpiece\", \"8k\", \"ultra-detailed\", \
+\"hyperdetailed\", \"trending on artstation\", \"3d render\", or \"photorealistic\"; they \
+degrade this model. When you mean a photo, just write \"photograph\". Lead with the subject \
+and composition, then lighting, materials, and mood.\n\nCompose to keep anatomy robust rather \
+than listing things to avoid. Hands are the hardest case: if a hand would appear only \
+partially, awkwardly, or in close-up where individual fingers must be drawn, frame it out of \
+shot, tuck it behind an object, in a pocket or a sleeve, or choose a composition that doesn't \
+require it. When a hand is shown, describe it at rest with five fingers in a relaxed natural \
+pose. Describe faces as calm and symmetric with a steady gaze, and bodies with coherent, \
+plausible proportions. Keep any sign or label text short and legible, or leave it out. Output \
+one paragraph, plain text. No preamble, no quotes, no markdown, no commentary.";
+
+/// Baseline negative prompt applied when neither the user nor the
+/// refiner supplied one (e.g. refine turned off, or no refiner model
+/// configured). Short on purpose: Z-Image Turbo is distilled and barely
+/// registers the negative at its low cfg, so this is cheap insurance,
+/// not heavy negative engineering. Inpaint (Flux Fill, cfg 3.5) is where
+/// it bites hardest; Kontext (cfg 1) ignores it.
+pub const DEFAULT_NEGATIVE: &str = "extra fingers, fused fingers, malformed hands, \
+extra limbs, distorted face, asymmetric eyes, blurry, low quality, jpeg artifacts, \
+watermark, signature, text";
 
 const PERSONAS: &[Persona] = &[
     Persona {

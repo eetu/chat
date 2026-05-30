@@ -109,8 +109,6 @@ const Landing = () => {
           model={model}
           onModelChange={onModelChange}
           vision={caps?.vision ?? false}
-          chatCap={caps?.chat ?? true}
-          imageGen={caps?.image_gen ?? false}
           refinerAvailable={status?.refiner_available ?? false}
           img2imgAvailable={status?.img2img_available ?? false}
           voiceInAvailable={status?.voice_in_available ?? false}

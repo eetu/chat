@@ -22,8 +22,6 @@ const Harness = ({ onSendSpy }: { onSendSpy: (...args: SendArgs) => void }) => {
         model="qwen3-image"
         onModelChange={() => {}}
         vision={false}
-        chatCap={false}
-        imageGen={true}
         refinerAvailable={false}
         img2imgAvailable={true}
         voiceInAvailable={false}

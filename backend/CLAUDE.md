@@ -47,16 +47,25 @@ Rust crate `chat-backend`. Single binary, self-contained — bundles SQLite via
   `storage::set_conversation_title`. Failures are logged and ignored — the
   earlier eager truncate (first 60 chars of the user message) stays in
   place. Do not run auto-rename on subsequent turns.
-- **Image generation.** When the client sends `mode: "image"` and the
-  resolved model has `"image"` in its `/api/show` capabilities, the chat
-  handler inserts a `status='pending'` assistant row, optionally calls
-  `ollama::refine_image_prompt` (skipped if `PROMPT_REFINER_MODEL` is
-  unset) to expand the user's prompt, then posts to
-  `/v1/images/generations`. On success the row is updated to `status='done'`
-  with the b64 PNG in `attachments` and the refined prompt as `content`
-  (rendered as a caption under the image). On failure the row is set to
-  `status='error'` with the error text in `content`. Stale pending rows
-  (>5 min) are swept to `error` at startup.
+- **Image generation.** All image gen runs on ComfyUI (`COMFYUI_URL`) —
+  there is no Ollama image path. It is a server-level capability,
+  independent of the selected chat model. When the client sends
+  `mode: "image"` the chat handler inserts a `status='pending'`
+  assistant row; if no ComfyUI host is configured it immediately fails
+  that row and emits an SSE `error` (no fallback). Otherwise it
+  optionally calls `ollama::refine_image_prompt` (skipped if
+  `PROMPT_REFINER_MODEL` is unset) to expand the prompt, evicts the chat
+  model, then dispatches in `comfyui.rs`:
+  - no attachment → `generate_txt2img` (Z-Image Turbo, 8 steps, cfg 2.0);
+  - reference image(s) → `generate_kontext` (Flux Kontext img2img);
+  - base + mask → `generate_inpaint` (Flux Fill).
+  The refiner's negative prompt feeds the real-CFG paths (txt2img +
+  inpaint); Kontext runs cfg=1 and ignores it. On success the row is
+  updated to `status='done'` with the b64 PNG in `attachments` and the
+  refined prompt as `content` (rendered as a caption). On failure the
+  row is set to `status='error'`. Stale pending rows (>5 min) are swept
+  to `error` at startup. `comfyui::free_memory` is called after every
+  job (success/error/cancel) so the diffusion stack doesn't sit resident.
 - **Vision / image attachments.** `messages.attachments` is a nullable
   TEXT column holding a JSON array of base64 strings (no `data:` prefix).
   `Storage::append_message` takes an `images: &[String]` slice; pass

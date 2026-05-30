@@ -9,8 +9,8 @@
 //! the tool result from the `done` event.
 
 use chat_shared::{
-    ErrorPayload, ImageModelsResponse, ImageResponse, Img2ImgRequest, InpaintRequest,
-    PreviewPayload, ProgressPayload, Txt2ImgRequest,
+    ErrorPayload, ImageResponse, Img2ImgRequest, InpaintRequest, PreviewPayload, ProgressPayload,
+    Txt2ImgRequest,
 };
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -120,27 +120,6 @@ impl BackendConfig {
     ) -> Result<(), BackendError> {
         let url = format!("{}/api/v1/img2img", self.base_url);
         self.run_sse(&url, body, tx).await
-    }
-
-    /// GET `/api/v1/models/image` and return the parsed listing. This
-    /// is a normal JSON call, not SSE — no streaming on the wire.
-    pub async fn list_image_models(&self) -> Result<ImageModelsResponse, BackendError> {
-        let url = format!("{}/api/v1/models/image", self.base_url);
-        let mut req = self.client.get(url);
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(BackendError::Status {
-                status: status.as_u16(),
-                body,
-            });
-        }
-        let parsed: ImageModelsResponse = resp.json().await?;
-        Ok(parsed)
     }
 
     /// POST `/api/v1/inpaint` and pump SSE events into `tx`.

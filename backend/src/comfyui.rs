@@ -48,6 +48,9 @@ const KONTEXT_SAVE_NODE_ID: &str = "9";
 /// Save-node id in the Flux Fill inpaint workflow.
 const INPAINT_SAVE_NODE_ID: &str = "11";
 
+/// Save-node id in the Z-Image Turbo txt2img workflow.
+const TXT2IMG_SAVE_NODE_ID: &str = "9";
+
 /// Cap how long we wait for ComfyUI to finish a single job. On Apple
 /// Silicon (MPS) Flux Kontext Q6_K samples at ~75 s/step at 1024² —
 /// 20 steps lands around 25 minutes, plus model load. 30 minutes covers
@@ -556,6 +559,117 @@ fn build_inpaint_workflow(
     })
 }
 
+/// Build the Z-Image Turbo text-to-image workflow.
+///
+/// Mirrors `files/comfyui-workflows/z-image-turbo-txt2img.json` on the
+/// mini host (node ids 1–9 verbatim). Z-Image is a 16-channel model:
+/// UNet + Qwen3 text encoder (loaded as `stable_diffusion` so core
+/// auto-detects the QWEN3_4B → z_image TE), reusing Flux's `ae.safetensors`
+/// VAE. `TextEncodeZImageOmni` carries both prompts; `EmptySD3LatentImage`
+/// gives the 16-ch latent; KSampler runs euler/simple at the turbo
+/// defaults (8 steps, cfg 2.0). cfg 2.0 means the negative branch is
+/// live, so node 5's text actually influences output.
+///
+/// `auto_resize_images` is required on the text-encode nodes — the node
+/// schema defaults it but the `/prompt` validator rejects the graph if
+/// it's absent.
+fn build_txt2img_workflow(
+    prompt: &str,
+    negative: &str,
+    seed: u64,
+    steps: u32,
+) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "1": {
+            "class_type": "UnetLoaderGGUF",
+            "inputs": { "unet_name": "z-image-turbo-Q8_0.gguf" },
+        },
+        "2": {
+            "class_type": "CLIPLoaderGGUF",
+            "inputs": { "clip_name": "Qwen3-4B-UD-Q5_K_XL.gguf", "type": "stable_diffusion" },
+        },
+        "3": {
+            "class_type": "VAELoader",
+            "inputs": { "vae_name": "ae.safetensors" },
+        },
+        "4": {
+            "class_type": "TextEncodeZImageOmni",
+            "inputs": { "clip": ["2", 0], "prompt": prompt, "auto_resize_images": true },
+        },
+        "5": {
+            "class_type": "TextEncodeZImageOmni",
+            "inputs": { "clip": ["2", 0], "prompt": negative, "auto_resize_images": true },
+        },
+        "6": {
+            "class_type": "EmptySD3LatentImage",
+            "inputs": { "width": 1024, "height": 1024, "batch_size": 1 },
+        },
+        "7": {
+            "class_type": "KSampler",
+            "inputs": {
+                "model": ["1", 0],
+                "positive": ["4", 0],
+                "negative": ["5", 0],
+                "latent_image": ["6", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": 2.0,
+                "sampler_name": "euler",
+                "scheduler": "simple",
+                "denoise": 1.0,
+            },
+        },
+        "8": {
+            "class_type": "VAEDecode",
+            "inputs": { "samples": ["7", 0], "vae": ["3", 0] },
+        },
+        "9": {
+            "class_type": "SaveImage",
+            "inputs": { "images": ["8", 0], "filename_prefix": "chat_zimage" },
+        },
+    })
+}
+
+/// Run a Z-Image Turbo text-to-image job. No upload step (no reference
+/// image); otherwise the lifecycle is shared with the Kontext/inpaint
+/// paths via `run_workflow`. Random seed masked the same way as the
+/// other generators. Caller is expected to have evicted competing
+/// Ollama models and to call `free_memory()` afterward.
+pub async fn generate_txt2img<F>(
+    state: &AppState,
+    prompt: &str,
+    negative: &str,
+    steps: u32,
+    cancel: F,
+    on_progress: Option<ProgressCallback>,
+) -> Result<String, ChatStreamError>
+where
+    F: std::future::Future<Output = ()>,
+{
+    let base = state
+        .settings
+        .comfyui_url
+        .as_deref()
+        .ok_or(ChatStreamError::EmptyImage)?
+        .trim_end_matches('/')
+        .to_string();
+    let client_id = Uuid::new_v4().to_string();
+
+    let seed: u64 = (Uuid::new_v4().as_u128() as u64) & 0x7fff_ffff_ffff_ffff;
+    let workflow = build_txt2img_workflow(prompt, negative, seed, steps);
+    run_workflow(
+        state,
+        &base,
+        &client_id,
+        workflow,
+        TXT2IMG_SAVE_NODE_ID,
+        cancel,
+        on_progress,
+    )
+    .await
+}
+
 /// Run a Flux Fill masked-inpaint job. Shape mirrors `generate_kontext`:
 /// upload reference + mask, queue the workflow, share the WS watcher /
 /// history poll / view fetch via `run_workflow`. The caller is
@@ -879,5 +993,40 @@ mod tests {
 
         // SaveImage id matches the constant the poll loop watches for.
         assert_eq!(wf[INPAINT_SAVE_NODE_ID]["class_type"], "SaveImage");
+    }
+
+    #[test]
+    fn txt2img_workflow_wires_zimage() {
+        // Sanity check: shape matches
+        // files/comfyui-workflows/z-image-turbo-txt2img.json. Guards
+        // against drift from the host JSON — node ids / class types /
+        // model filenames that would only fail at runtime on the mini.
+        let wf = build_txt2img_workflow("a red fox in snow", "blurry, low quality", 7, 8);
+
+        assert_eq!(
+            wf["1"]["class_type"], "UnetLoaderGGUF",
+            "node 1 must load the Z-Image Turbo GGUF"
+        );
+        assert_eq!(wf["1"]["inputs"]["unet_name"], "z-image-turbo-Q8_0.gguf");
+
+        assert_eq!(wf["2"]["class_type"], "CLIPLoaderGGUF");
+        assert_eq!(wf["2"]["inputs"]["type"], "stable_diffusion");
+
+        // Positive on node 4, negative on node 5; both carry the
+        // schema-required auto_resize_images flag.
+        assert_eq!(wf["4"]["class_type"], "TextEncodeZImageOmni");
+        assert_eq!(wf["4"]["inputs"]["prompt"], "a red fox in snow");
+        assert_eq!(wf["4"]["inputs"]["auto_resize_images"], true);
+        assert_eq!(wf["5"]["inputs"]["prompt"], "blurry, low quality");
+        assert_eq!(wf["5"]["inputs"]["auto_resize_images"], true);
+
+        assert_eq!(wf["6"]["class_type"], "EmptySD3LatentImage");
+
+        assert_eq!(wf["7"]["class_type"], "KSampler");
+        assert_eq!(wf["7"]["inputs"]["seed"], 7);
+        assert_eq!(wf["7"]["inputs"]["steps"], 8);
+
+        // SaveImage id matches the constant the poll loop watches for.
+        assert_eq!(wf[TXT2IMG_SAVE_NODE_ID]["class_type"], "SaveImage");
     }
 }
