@@ -1131,10 +1131,22 @@ pub async fn chat(
                             &serde_json::json!({}),
                         )))
                         .await;
-                    match image_sem.acquire_owned().await {
-                        Ok(p) => p,
-                        Err(e) => {
-                            tracing::error!("image semaphore closed: {e}");
+                    // Race the wait against client disconnect: if the user
+                    // gives up (closes tab) while queued, abandon the job
+                    // rather than evicting models and hitting ComfyUI for
+                    // an output nobody will see.
+                    tokio::select! {
+                        permit = image_sem.acquire_owned() => match permit {
+                            Ok(p) => p,
+                            Err(e) => {
+                                tracing::error!("image semaphore closed: {e}");
+                                return;
+                            }
+                        },
+                        _ = tx.closed() => {
+                            tracing::info!(
+                                "image client disconnected while queued — abandoning job"
+                            );
                             return;
                         }
                     }
@@ -1244,6 +1256,10 @@ pub async fn chat(
                         comfyui::ProgressEvent::Preview { mime, b64 } => ollama::sse_json(
                             "preview",
                             &serde_json::json!({"mime": mime, "b64": b64}),
+                        ),
+                        comfyui::ProgressEvent::Queued { ahead } => ollama::sse_json(
+                            "queued",
+                            &serde_json::json!({"ahead": ahead}),
                         ),
                     };
                     let _ = progress_tx.try_send(Ok(payload));

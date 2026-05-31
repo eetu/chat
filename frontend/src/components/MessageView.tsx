@@ -31,6 +31,8 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
   /** Image-mode only: backend is waiting on the image-gen semaphore.
    * Drives the queued state on the pending placeholder. */
   queued?: boolean;
+  /** Image-mode only: jobs ahead of ours in the shared ComfyUI queue. */
+  queuedAhead?: number;
   /** End-of-turn token / TPS stats from the live stream. Not persisted
    * server-side; only present on the most recent assistant turn this
    * session. */
@@ -482,6 +484,7 @@ const MessageView = ({
           progress={msg.progress}
           previewDataUrl={msg.previewDataUrl}
           queued={msg.queued}
+          queuedAhead={msg.queuedAhead}
         />
       )}
       {isError && !hasContent && (
@@ -1224,14 +1227,20 @@ const ImageGenPlaceholder = ({
   progress,
   previewDataUrl,
   queued,
+  queuedAhead,
 }: {
   progress?: { value: number; max: number };
   previewDataUrl?: string;
   queued?: boolean;
+  queuedAhead?: number;
 }) => {
   const theme = useTheme();
+  const queuedLabel =
+    queuedAhead && queuedAhead > 0
+      ? `queued — ${queuedAhead} ${queuedAhead === 1 ? "job" : "jobs"} ahead…`
+      : "queued — waiting for gpu…";
   const stepLabel = queued
-    ? "queued — waiting for gpu…"
+    ? queuedLabel
     : progress && progress.max > 0
       ? `step ${progress.value} / ${progress.max}`
       : "rendering image…";

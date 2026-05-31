@@ -38,7 +38,7 @@ const CSP: &str = concat!(
     "form-action 'self'",
 );
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -100,6 +100,14 @@ pub struct AppState {
     /// Coarse cache of "does Ollama have at least one embedding-capable
     /// model?" so `/status` doesn't walk every model on every poll.
     pub embed_models_available: Mutex<Option<(Instant, bool)>>,
+    /// ComfyUI prompt IDs this process has submitted and not yet finished.
+    /// ComfyUI's `/interrupt` and `/free` are global — when several chat
+    /// backends share one ComfyUI host (e.g. localhost + raspi), a cancel
+    /// or memory-free from one instance must NOT abort another instance's
+    /// in-flight render. We gate every interrupt/free on this set so we
+    /// only ever touch a job we own. `std::sync::Mutex` — locked only for
+    /// quick insert/remove/snapshot, never held across `.await`.
+    pub active_prompts: std::sync::Mutex<HashSet<String>>,
 }
 
 pub fn create_app(
@@ -314,6 +322,7 @@ pub async fn run_server() -> std::io::Result<()> {
         image_sem: Arc::new(Semaphore::new(image_concurrency)),
         image_buffer: image_buffer::ImageBuffer::new(),
         embed_models_available: Mutex::new(None),
+        active_prompts: std::sync::Mutex::new(HashSet::new()),
     });
 
     // Image generation can take >1 minute. Anything older than 5 still
@@ -350,5 +359,6 @@ pub fn create_test_state() -> Arc<AppState> {
         image_sem: Arc::new(Semaphore::new(1)),
         image_buffer: image_buffer::ImageBuffer::new(),
         embed_models_available: Mutex::new(None),
+        active_prompts: std::sync::Mutex::new(HashSet::new()),
     })
 }

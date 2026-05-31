@@ -281,10 +281,18 @@ async fn acquire_image_permit(
             let _ = tx
                 .send(Ok(ollama::sse_json("queued", &serde_json::json!({}))))
                 .await;
-            match sem.acquire_owned().await {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    tracing::error!("image semaphore closed: {e}");
+            // Bail if the caller disconnects while queued rather than
+            // running a render whose output nobody will collect.
+            tokio::select! {
+                permit = sem.acquire_owned() => match permit {
+                    Ok(p) => Some(p),
+                    Err(e) => {
+                        tracing::error!("image semaphore closed: {e}");
+                        None
+                    }
+                },
+                _ = tx.closed() => {
+                    tracing::info!("image client disconnected while queued — abandoning job");
                     None
                 }
             }
@@ -317,6 +325,9 @@ fn make_progress_cb(
                 })
                 .unwrap_or_default(),
             ),
+            comfyui::ProgressEvent::Queued { ahead } => {
+                ollama::sse_json("queued", &serde_json::json!({ "ahead": ahead }))
+            }
         };
         let _ = tx.try_send(Ok(payload));
     })

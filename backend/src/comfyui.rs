@@ -34,6 +34,12 @@ pub enum ProgressEvent {
     /// launched with `--preview-method`. Bytes are pre-base64'd to keep
     /// the SSE payload trivially serialisable.
     Preview { mime: &'static str, b64: String },
+    /// Our prompt is sitting in ComfyUI's pending queue behind other
+    /// jobs — typically jobs another backend started on the same shared
+    /// host, which our per-process semaphore can't see. `ahead` is how
+    /// many jobs (running + pending) are in front of ours. Lets the UI
+    /// explain a wait longer than our own queue would account for.
+    Queued { ahead: u32 },
 }
 
 /// Trait alias for the closure handlers pass in to receive progress.
@@ -356,6 +362,11 @@ where
         .await
         .map_err(ChatStreamError::Http)?;
 
+    // Track this prompt as ours for the rest of the job. Lets cancel /
+    // free distinguish our render from one another backend started on the
+    // same shared ComfyUI host. Dropped on every return path below.
+    let _prompt_guard = PromptGuard::register(state, &queued.prompt_id);
+
     // Subscribe to ComfyUI's WebSocket for live progress + previews.
     // The guard's Drop fires on every return path below — sends the
     // cancel signal then aborts the spawned task so we never leak a WS
@@ -385,6 +396,9 @@ where
     tokio::pin!(cancel);
     let history_url = format!("{base}/history/{}", queued.prompt_id);
     let deadline = std::time::Instant::now() + POLL_TIMEOUT;
+    // Last-reported queue position, so we only emit a `Queued` event when
+    // it actually changes rather than once per poll.
+    let mut last_ahead: Option<u32> = None;
     let output_meta = loop {
         if std::time::Instant::now() >= deadline {
             interrupt_and_dequeue(state, base, &queued.prompt_id).await;
@@ -400,6 +414,24 @@ where
                 return Err(ChatStreamError::Cancelled);
             }
             _ = tokio::time::sleep(POLL_INTERVAL) => {}
+        }
+        // Surface ComfyUI-side queue position while our prompt waits its
+        // turn. Jobs ahead of ours are usually another backend's work on
+        // this shared host — invisible to our own semaphore — which is why
+        // the wait can exceed what our local queue implies.
+        if let Some(cb) = on_progress.as_ref() {
+            if let Some((running, pending)) = queue_snapshot(state, base).await {
+                let ahead = pending
+                    .iter()
+                    .position(|p| p == &queued.prompt_id)
+                    .map(|i| i as u32 + u32::from(running.is_some()));
+                if ahead != last_ahead {
+                    last_ahead = ahead;
+                    if let Some(a) = ahead {
+                        cb(ProgressEvent::Queued { ahead: a });
+                    }
+                }
+            }
         }
         let res = match state.http_client.get(&history_url).send().await {
             Ok(r) => r,
@@ -870,22 +902,114 @@ fn ws_url_from(http_url: &str, client_id: &str) -> String {
     format!("{scheme}://{rest}/ws?clientId={client_id}")
 }
 
-/// Best-effort cancel: drop the prompt from the queue (no-op if it has
-/// already started executing) and interrupt the currently running job.
-/// ComfyUI's `/interrupt` is global — there's only one worker — so a
-/// stale interrupt on a different job is the worst case here. Acceptable
-/// for a single-tenant box. Errors are logged and swallowed; callers
-/// have already decided to abort.
-pub(crate) async fn interrupt_and_dequeue(state: &AppState, base: &str, prompt_id: &str) {
+/// RAII guard recording one in-flight prompt in `state.active_prompts`.
+/// Registered right after `/prompt` returns an id, removed on every exit
+/// path from `run_workflow`. ComfyUI's `/interrupt` and `/free` are
+/// global — when several chat backends share one ComfyUI host this set is
+/// how we tell a job we own from one another instance started.
+struct PromptGuard<'a> {
+    state: &'a AppState,
+    prompt_id: String,
+}
+
+impl<'a> PromptGuard<'a> {
+    fn register(state: &'a AppState, prompt_id: &str) -> Self {
+        if let Ok(mut set) = state.active_prompts.lock() {
+            set.insert(prompt_id.to_string());
+        }
+        Self {
+            state,
+            prompt_id: prompt_id.to_string(),
+        }
+    }
+}
+
+impl Drop for PromptGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut set) = self.state.active_prompts.lock() {
+            set.remove(&self.prompt_id);
+        }
+    }
+}
+
+/// True if `prompt_id` is one this process submitted and hasn't finished.
+fn owns_prompt(state: &AppState, prompt_id: &str) -> bool {
+    state
+        .active_prompts
+        .lock()
+        .map(|s| s.contains(prompt_id))
+        .unwrap_or(false)
+}
+
+/// Snapshot of every prompt id this process currently has in flight.
+fn active_prompt_snapshot(state: &AppState) -> Vec<String> {
+    state
+        .active_prompts
+        .lock()
+        .map(|s| s.iter().cloned().collect())
+        .unwrap_or_default()
+}
+
+/// Snapshot of ComfyUI's queue: the running prompt id (if any) plus the
+/// ordered pending prompt ids. Queue shape:
+/// `{ "queue_running": [[num, "<id>", ...]], "queue_pending": [[num, "<id>", ...]] }`.
+/// Best-effort — returns `None` on any error so callers stay conservative.
+async fn queue_snapshot(state: &AppState, base: &str) -> Option<(Option<String>, Vec<String>)> {
+    let body: serde_json::Value = state
+        .http_client
+        .get(format!("{base}/queue"))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let id_of = |entry: &serde_json::Value| {
+        entry
+            .get(1)
+            .and_then(|id| id.as_str())
+            .map(|s| s.to_string())
+    };
+    let running = body
+        .get("queue_running")
+        .and_then(|r| r.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(id_of);
+    let pending = body
+        .get("queue_pending")
+        .and_then(|p| p.as_array())
+        .map(|arr| arr.iter().filter_map(id_of).collect())
+        .unwrap_or_default();
+    Some((running, pending))
+}
+
+/// The prompt id ComfyUI is executing right now, if any. We never
+/// interrupt when we can't confirm ownership, so errors collapse to
+/// `None`.
+async fn running_prompt_id(state: &AppState, base: &str) -> Option<String> {
+    queue_snapshot(state, base).await.and_then(|(running, _)| running)
+}
+
+/// Remove the given prompt ids from ComfyUI's pending queue. No-op for
+/// any id that has already started executing or finished.
+async fn dequeue(state: &AppState, base: &str, prompt_ids: &[String]) {
+    if prompt_ids.is_empty() {
+        return;
+    }
     if let Err(e) = state
         .http_client
         .post(format!("{base}/queue"))
-        .json(&serde_json::json!({ "delete": [prompt_id] }))
+        .json(&serde_json::json!({ "delete": prompt_ids }))
         .send()
         .await
     {
         tracing::warn!("comfyui queue delete failed: {e}");
     }
+}
+
+/// Fire ComfyUI's global `/interrupt`. Aborts whatever is executing — so
+/// callers MUST confirm they own the running job before invoking this.
+async fn post_interrupt(state: &AppState, base: &str) {
     if let Err(e) = state
         .http_client
         .post(format!("{base}/interrupt"))
@@ -893,6 +1017,19 @@ pub(crate) async fn interrupt_and_dequeue(state: &AppState, base: &str, prompt_i
         .await
     {
         tracing::warn!("comfyui interrupt failed: {e}");
+    }
+}
+
+/// Cancel a specific prompt we own. Always safe to drop it from the
+/// pending queue (no-op once it has started). The global `/interrupt`
+/// only fires when this exact prompt is the one currently executing, so
+/// cancelling here never aborts a render another backend started against
+/// the same shared ComfyUI host. Errors are logged and swallowed; the
+/// caller has already decided to abort.
+pub(crate) async fn interrupt_and_dequeue(state: &AppState, base: &str, prompt_id: &str) {
+    dequeue(state, base, &[prompt_id.to_string()]).await;
+    if running_prompt_id(state, base).await.as_deref() == Some(prompt_id) {
+        post_interrupt(state, base).await;
     }
 }
 
@@ -911,6 +1048,16 @@ pub async fn free_memory(state: &AppState) {
     else {
         return;
     };
+    // Don't unload checkpoints out from under a render another backend is
+    // running on this shared host. If something is executing and we don't
+    // own it, skip the free entirely — it'll get unloaded after its own
+    // job finishes.
+    if let Some(running) = running_prompt_id(state, &base).await {
+        if !owns_prompt(state, &running) {
+            tracing::info!("comfyui busy with foreign job {running} — skipping /free");
+            return;
+        }
+    }
     if let Err(e) = state
         .http_client
         .post(format!("{base}/free"))
@@ -928,6 +1075,10 @@ pub async fn free_memory(state: &AppState) {
 /// Standalone cancel entry point used by the explicit cancel route, for
 /// the case where the user wants to stop a generation from a tab that
 /// isn't holding the original SSE connection (e.g. after a page reload).
+/// Has no prompt id to work from, so it cancels only jobs THIS process
+/// owns: drop ours from the pending queue, and interrupt the running job
+/// only if we own it. A foreign render (another backend sharing this
+/// ComfyUI host) is left untouched.
 pub async fn interrupt_active(state: &AppState) {
     let Some(base) = state
         .settings
@@ -937,13 +1088,20 @@ pub async fn interrupt_active(state: &AppState) {
     else {
         return;
     };
-    if let Err(e) = state
-        .http_client
-        .post(format!("{base}/interrupt"))
-        .send()
-        .await
-    {
-        tracing::warn!("comfyui interrupt failed: {e}");
+    let ours = active_prompt_snapshot(state);
+    // Drop any of our own jobs still sitting in the pending queue.
+    dequeue(state, &base, &ours).await;
+    // Interrupt the executing job only when it's one of ours.
+    match running_prompt_id(state, &base).await {
+        Some(running) if ours.contains(&running) => {
+            post_interrupt(state, &base).await;
+        }
+        Some(running) => {
+            tracing::info!(
+                "cancel: running comfyui job {running} not owned by this instance — leaving it"
+            );
+        }
+        None => {}
     }
 }
 
