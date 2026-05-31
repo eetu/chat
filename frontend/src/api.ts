@@ -183,10 +183,12 @@ export type ChatStreamEvent =
   | { type: "error"; message: string }
   | { type: "progress"; value: number; max: number }
   | { type: "preview"; mime: string; b64: string }
-  /** Image-mode only: the backend is waiting on a slot in the image-gen
-   * semaphore. Sent at most once per request and only when the permit
-   * wasn't immediately available. */
-  | { type: "queued" }
+  /** Image-mode only: the job is waiting. Either on a slot in this
+   * backend's image-gen semaphore (no `ahead`), or behind other jobs in
+   * the shared ComfyUI host's own queue (`ahead` = jobs in front of ours,
+   * which may belong to another backend). Re-sent whenever `ahead`
+   * changes. */
+  | { type: "queued"; ahead?: number }
   /** Text-mode only: end-of-turn generation stats. Lives only for the
    * current SSE stream — not persisted yet, so reload drops them. */
   | {
@@ -311,7 +313,17 @@ function parseFrame(frame: string): ChatStreamEvent | null {
       return null;
     }
   }
-  if (event === "queued") return { type: "queued" };
+  if (event === "queued") {
+    try {
+      const parsed = JSON.parse(data) as { ahead?: number };
+      return {
+        type: "queued",
+        ahead: typeof parsed.ahead === "number" ? parsed.ahead : undefined,
+      };
+    } catch {
+      return { type: "queued" };
+    }
+  }
   if (event === "context") {
     try {
       const parsed = JSON.parse(data) as {

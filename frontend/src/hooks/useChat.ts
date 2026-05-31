@@ -110,6 +110,10 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
    * Cleared automatically when the first progress / preview / delta
    * event arrives. */
   queued?: boolean;
+  /** Image-mode only: jobs ahead of ours in the shared ComfyUI host's
+   * queue (often another backend's work). Undefined when we're only
+   * waiting on our own semaphore. Same lifecycle as `queued`. */
+  queuedAhead?: number;
   /** Text-mode only: end-of-turn generation stats from Ollama. Not
    * persisted server-side — present only on the live stream of this
    * conversation. */
@@ -260,7 +264,11 @@ export function useChat(convId: string | undefined) {
               const next = prev.slice();
               const last = next[next.length - 1];
               if (last && last.role === "assistant") {
-                next[next.length - 1] = { ...last, queued: true };
+                next[next.length - 1] = {
+                  ...last,
+                  queued: true,
+                  queuedAhead: evt.ahead,
+                };
               }
               return next;
             });
@@ -272,6 +280,7 @@ export function useChat(convId: string | undefined) {
                 next[next.length - 1] = {
                   ...last,
                   queued: false,
+                  queuedAhead: undefined,
                   progress: { value: evt.value, max: evt.max },
                 };
               }
@@ -285,6 +294,7 @@ export function useChat(convId: string | undefined) {
                 next[next.length - 1] = {
                   ...last,
                   queued: false,
+                  queuedAhead: undefined,
                   previewDataUrl: `data:${evt.mime};base64,${evt.b64}`,
                 };
               }
