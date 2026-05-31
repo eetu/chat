@@ -1181,11 +1181,21 @@ const Composer = ({
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
+            flexWrap: "wrap",
             gap: 12,
             paddingTop: 2,
           }}
         >
-          <div css={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <div
+            css={{
+              display: "flex",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 4,
+              flex: "1 1 auto",
+              minWidth: 0,
+            }}
+          >
             {canAttach && (
               <>
                 <input
@@ -1363,7 +1373,15 @@ const Composer = ({
               />
             )}
           </div>
-          <div css={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div
+            css={{
+              display: "flex",
+              alignItems: "center",
+              gap: 12,
+              flexShrink: 0,
+              marginLeft: "auto",
+            }}
+          >
             {onModelChange && (
               <ModelPicker
                 value={model ?? null}
