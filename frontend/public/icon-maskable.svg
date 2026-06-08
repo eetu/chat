@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64"
+     fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Maskable variant: same chat-bubble glyph shrunk to the ~60% centre safe
+       zone so Android's adaptive mask can't clip it. Opaque white bg fills the
+       canvas (iOS/Android fill transparency black otherwise). -->
+  <rect width="64" height="64" fill="#ffffff"/>
+  <g transform="translate(32 32) scale(0.6) translate(-32 -32)">
+    <path d="M20 11H44a10 10 0 0 1 10 10V33a10 10 0 0 1-10 10H30l-10 10v-10a10 10 0 0 1-10-10V21a10 10 0 0 1 10-10z"
+          stroke="#525252" stroke-width="3" fill="#ffffff"/>
+    <circle cx="32" cy="27" r="6" fill="#f78f08"/>
+  </g>
+</svg>

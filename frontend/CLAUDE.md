@@ -96,8 +96,8 @@ when the backend renames a conversation from `"new chat"`).
 - Don't enable `rehype-raw` in `Markdown.tsx`. Raw HTML in model output is
   intentionally escaped, not rendered.
 - For markdown extensions (mermaid, slugs, emoji, code-copy button,
-  streaming-fence balancing) see `.claude/skills/chat-design/README.md`
-  → "Future renderer extensions". Each entry has its install command,
-  plugin/component snippet, and the tradeoff that justified deferring it.
-  Don't add speculatively — wire when a real conversation needs it.
+  streaming-fence balancing) see `frontend/docs/renderer-extensions.md`.
+  Each entry has its install command, plugin/component snippet, and the
+  tradeoff that justified deferring it. Don't add speculatively — wire
+  when a real conversation needs it.
 - Don't add hover-only affordances. Some users will be on touch devices.

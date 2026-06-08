@@ -1,67 +1,60 @@
 ---
 name: chat-design
-description: Use this skill to generate well-branded interfaces and assets for the chat app (a self-hosted chat UI that talks to an Ollama LAN endpoint), either for production or throwaway prototypes/mocks. Contains essential design guidelines, colors, type, fonts, assets, and UI kit components for prototyping. Sibling product to halo — same design language, different glyph.
+description: Visual identity for chat (full wordmark "royale with chat.") — a sibling in eetu's homebrew web app family. Layers chat's glyph, wordmark, layout, and voice on top of the shared halo-design tokens. Use when building or styling chat's UI, or generating branded assets/mocks.
 user-invocable: true
 ---
 
-Read `README.md` in this skill, plus `colors_and_type.css` and `assets/`.
+# chat-design
 
-For production code, the source of truth lives in the host repo:
-- Components: `frontend/src/components/`
-- Theme tokens: `frontend/src/themes.ts` (copied verbatim from halo)
-- Routes: `frontend/src/routes/` (TanStack Router, file-based)
-- Wordmark: `frontend/src/components/Wordmark.tsx`
+Shared tokens + conventions come from `halo-design` — copy `colors_and_type.css`
+verbatim. In this repo the tokens live, mirrored, in `frontend/src/themes.ts`;
+read them via `useTheme()` and style with Emotion's `css` prop — never hardcode
+hex. Below is chat's delta.
 
-If creating visual artifacts (slides, mocks, throwaway prototypes, etc), copy
-assets out and create static HTML files for the user to view. If working on
-production code, refer to existing components first; do not recreate them as
-JSX prototypes.
+## The four deltas
 
-If the user invokes this skill without any other guidance, ask them what they
-want to build or design, ask some questions, and act as an expert designer
-who outputs HTML artifacts _or_ production code, depending on the need.
+**Glyph** — a **rounded chat bubble + warm centre dot**. 64×64, `currentColor`
+outline with a small tail bottom-left so it reads as a bubble at favicon size,
+the one hardcoded color a warm `#f78f08` dot (the family "warm centre"). Stroke
+~3, round joins — same weight as halo's ring. Source:
+`frontend/public/favicon.svg` (rasters `icon-{192,512}.png` /
+`apple-touch-icon.png`; regen recipe in `frontend/public/README.md`).
 
-Key things to keep in mind for chat:
+**Wordmark** — `royale with chat` + accent period (Pulp Fiction riff on "Royale
+with Cheese"). Inter 600, lowercase, `-0.04em`. Collapses to bare `chat.` under
+600px (the `royale with ` prefix drops), same way halo collapses to its glyph.
+Alternate short form `le chat.` — use sparingly. Source:
+`frontend/src/components/Wordmark.tsx`.
 
-- **Sibling of halo.** Identical color palette, fonts, shadow, radius. Anyone
-  who has used halo should immediately recognize the family. The only visual
-  divergence is the wordmark glyph.
-- **Wordmark is "royale with chat."** Pulp Fiction reference (Royale with
-  Cheese). Inter 600, lowercase, `letter-spacing: -0.04em`. The word `chat`
-  is followed by an orange accent period. On narrow screens the "royale with"
-  prefix collapses, leaving just `chat.` — same way halo collapses to its
-  glyph. Alternate short form: `le chat.` (use sparingly; default to
-  "royale with chat").
-- **Glyph: rounded chat bubble + warm centre dot.** Same `currentColor` thin
-  stroke (3px) as halo's ring, same accent dot (`#f78f08`) inside. The bubble
-  has a small tail bottom-left so it reads as a chat bubble at favicon size.
-- **Voice.** Lowercase, terse, mildly pulpy. Numbers and conversations do
-  the talking. Empty states and errors are allowed one quotable line each
-  ("you brought a knife to a gunfight."). No marketing voice. No exclamation
-  marks. No emoji.
-- **Two columns, no chrome.** Sidebar (conversations list + new-chat button)
-  on the left, thread + composer on the right. No top nav bar, no breadcrumbs,
-  no settings cog. Settings live in env vars on the server, not the UI.
-- **Streaming first.** The assistant bubble appears the instant a user sends,
-  and content fills in token-by-token. Never block the UI on the full
-  response — a half-rendered bubble is the default.
-- **Cards: 6px radius, soft shadow** in light theme; shadow off in dark.
-  Same as halo.
-- **No emoji, no hero imagery.** Material Icons Outlined for any glyph that
-  isn't the brand mark.
-- **Touch-friendly.** Swipe-left on a conversation row reveals a delete
-  action. Tap targets are large. No hover-only affordances.
+**Layout / density** — **two columns, no chrome**: sidebar (wordmark → new-chat
+→ conversation list, swipe-left on touch to delete) + thread (centered, max-width
+760px; user input is a right-aligned tinted bubble, assistant output is rendered
+full-width as a markdown document, no bubble). Composer is one rounded shell
+pinned to the bottom. No top nav, no settings UI — settings are server env vars.
+Sparse vs halo's data-density. Single 600px breakpoint (`src/mq.ts`).
 
-## Differences from halo
+**Voice** — lowercase, terse, mildly pulpy. Numbers and conversations do the
+talking. No marketing tone, no exclamation marks, no emoji; Material Icons
+Outlined for any in-UI glyph that isn't the brand mark. Empty/error states get
+one quotable line each:
+- empty landing: *"the path of the righteous prompt is beset on all sides."*
+- login gate: *"you brought a knife to a gunfight. sign in first."*
+- 404: *"english, motherfucker, do you speak it?"*
 
-| Aspect | halo | chat |
-|---|---|---|
-| Wordmark glyph | thin ring + warm centre | chat bubble + warm centre |
-| Wordmark text | `halo.` | `royale with chat.` (collapses to `chat.`) |
-| Layout | fixed 720px column with nav rail | full-width sidebar + thread |
-| Locale | Finnish, lowercase | English, lowercase, Pulp Fiction flavor |
-| Density | data-dense (clock, charts, cards) | sparse (one column of bubbles) |
-| Motion | drawer unfold, stroke-dashoffset, breathing bulbs | none (yet) — stream is the motion |
+## Differences from halo / ocular / scribe
 
-Everything else — colors, fonts, shadow, radius, accent — is identical. Copy
-forward from halo's `themes.ts` whenever it changes.
+| | chat |
+|---|---|
+| Stack | Rust (actix-web) SSE proxy → Ollama + React 19 SPA (Emotion, TanStack Router) |
+| Glyph | chat bubble + warm centre dot |
+| Hero element | the streaming assistant message — token-by-token is the only motion |
+| Accent use | send button, active-conversation border, user-bubble tint, typing dots |
+
+## Source-of-truth files
+
+- `frontend/src/themes.ts` — canonical tokens (verbatim mirror of halo).
+- `frontend/src/components/Wordmark.tsx` — brand.
+- `frontend/src/components/{Sidebar,Composer,MessageView,Markdown}.tsx` — the screen.
+- `frontend/public/favicon.svg` — the glyph.
+- `frontend/docs/renderer-extensions.md` — deferred renderer work (mermaid, RAG,
+  fence/KaTeX balancing, code-copy button, …).
