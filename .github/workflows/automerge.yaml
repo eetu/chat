@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [main]
 
+# Uses AUTOMERGE_TOKEN (a PAT/App token with contents + pull_requests + workflows)
+# instead of GITHUB_TOKEN: GITHUB_TOKEN cannot merge PRs that edit
+# .github/workflows/* (no `workflows` permission scope exists), which blocks
+# every github-actions dependabot PR.
 permissions:
   contents: write
   pull-requests: write
@@ -11,7 +15,7 @@ permissions:
 jobs:
   automerge:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     if: github.actor == 'dependabot[bot]'
 
     steps:
@@ -19,4 +23,4 @@ jobs:
       - name: Automerge Dependabot PR
         uses: eetu/action-automerge@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ secrets.AUTOMERGE_TOKEN }}
