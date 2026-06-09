@@ -49,12 +49,11 @@ updates:
           - "minor"
           - "patch"
 
+  # github-actions only honours `default-days` — the semver-* keys silently
+  # break parsing for this ecosystem, so they're omitted.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
-      semver-major-days: 14
-      semver-minor-days: 7
-      semver-patch-days: 5
