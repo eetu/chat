@@ -9,6 +9,9 @@ ARG CHAT_IMAGE_TAG
 ENV VITE_CHAT_IMAGE_TAG=$CHAT_IMAGE_TAG
 WORKDIR /app
 COPY frontend/package.json frontend/yarn.lock frontend/.yarnrc.yml* ./
+# `.yarnrc.yml` pins `yarnPath` to a committed Yarn 4 release, so the
+# binary must be present before `yarn install` runs.
+COPY frontend/.yarn/releases ./.yarn/releases
 RUN corepack enable && yarn install --immutable --network-timeout 1000000
 COPY frontend/ .
 RUN yarn build
