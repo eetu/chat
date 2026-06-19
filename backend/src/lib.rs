@@ -160,8 +160,9 @@ pub fn create_app(
         .service(
             // /api/v1 — stateless MCP-facing image endpoints. Same
             // JSON body cap as /api/chat (base64 image inflate factor
-            // ~33% on the wire). Bearer-auth gated by ApiKey extractor
-            // inside each handler.
+            // ~33% on the wire). The generation handlers are Bearer-auth
+            // gated by the ApiKey extractor; GET /images/{id} is public
+            // (a capability URL — unguessable UUID + short TTL).
             //
             // MUST be registered BEFORE the /api scope below. actix-web
             // matches scopes by exclusive prefix: the first scope whose

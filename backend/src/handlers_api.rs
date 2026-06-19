@@ -168,11 +168,17 @@ pub async fn txt2img(
 /// buffer. The `.png` suffix is cosmetic — it makes the URL look like
 /// a file when curl'd into `-O`, but the lookup ignores it.
 ///
+/// **Unauthenticated by design** — this is a capability URL: the
+/// unguessable v4 UUID plus the short buffer TTL *is* the access
+/// control, so the user can `curl -O <url>` / open the link in a
+/// browser (the documented flow) without holding the MCP api key. The
+/// generation endpoints above stay `ApiKey`-gated (they cost GPU); a
+/// read of an already-rendered, soon-expiring blob does not.
+///
 /// 404 on unknown / expired ids. The blob's TTL is set by
 /// `CHAT_IMAGE_BUFFER_TTL_SECS` (default 30 min).
 pub async fn get_image(
     state: web::Data<Arc<AppState>>,
-    _auth: ApiKey,
     path: web::Path<String>,
 ) -> HttpResponse {
     let raw = path.into_inner();
