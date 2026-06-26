@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use chat_shared::{
-    Img2ImgRequest, InpaintRequest, Txt2ImgRequest, DEFAULT_INPAINT_STEPS,
-    DEFAULT_KONTEXT_STEPS, MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
+    Img2ImgRequest, InpaintRequest, Txt2ImgRequest, DEFAULT_INPAINT_STEPS, DEFAULT_KONTEXT_STEPS,
+    MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -180,7 +180,13 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
             negative_prompt: args.negative_prompt,
             steps: args.steps,
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Txt2Img(body),
+            args.inline,
+        )
+        .await
     }
 
     #[tool(
@@ -217,9 +223,19 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
         let body = Img2ImgRequest {
             prompt: args.prompt,
             images,
-            steps: Some(args.steps.unwrap_or(DEFAULT_KONTEXT_STEPS).clamp(MIN_STEPS, MAX_KONTEXT_STEPS)),
+            steps: Some(
+                args.steps
+                    .unwrap_or(DEFAULT_KONTEXT_STEPS)
+                    .clamp(MIN_STEPS, MAX_KONTEXT_STEPS),
+            ),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Img2Img(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Img2Img(body),
+            args.inline,
+        )
+        .await
     }
 
     #[tool(
@@ -264,9 +280,19 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
             image,
             mask,
             negative_prompt: args.negative_prompt,
-            steps: Some(args.steps.unwrap_or(DEFAULT_INPAINT_STEPS).clamp(MIN_STEPS, MAX_INPAINT_STEPS)),
+            steps: Some(
+                args.steps
+                    .unwrap_or(DEFAULT_INPAINT_STEPS)
+                    .clamp(MIN_STEPS, MAX_INPAINT_STEPS),
+            ),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Inpaint(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Inpaint(body),
+            args.inline,
+        )
+        .await
     }
 }
 
@@ -389,16 +415,19 @@ async fn run_tool(
 
     // Drain the pump's outcome so a transport error (network, 401)
     // surfaces as a tool error rather than getting silently swallowed.
-    let pump_result = pump.await.unwrap_or_else(|e| {
-        Err(backend::BackendError::Sse(format!("join: {e}")))
-    });
+    let pump_result = pump
+        .await
+        .unwrap_or_else(|e| Err(backend::BackendError::Sse(format!("join: {e}"))));
 
     match (final_b64, final_error, pump_result) {
-        (Some(b64), _, _) => Ok(success_result(&backend, &b64, final_uuid.as_deref(), inline)),
+        (Some(b64), _, _) => Ok(success_result(
+            &backend,
+            &b64,
+            final_uuid.as_deref(),
+            inline,
+        )),
         (None, Some(msg), _) => Ok(CallToolResult::error(vec![Content::text(msg)])),
-        (None, None, Err(e)) => Ok(CallToolResult::error(vec![Content::text(
-            e.to_string(),
-        )])),
+        (None, None, Err(e)) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         (None, None, Ok(())) => Ok(CallToolResult::error(vec![Content::text(
             "backend stream ended without a result",
         )])),
@@ -487,14 +516,13 @@ async fn main() -> anyhow::Result<()> {
     // subscriber already targets stderr.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("chat_mcp=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("chat_mcp=info")),
         )
         .with_writer(std::io::stderr)
         .init();
 
-    let backend = BackendConfig::from_env()
-        .context("failed to load backend config from environment")?;
+    let backend =
+        BackendConfig::from_env().context("failed to load backend config from environment")?;
     tracing::info!("connecting to chat backend at {}", backend.base_url);
 
     let transport = std::env::var("CHAT_MCP_TRANSPORT").unwrap_or_else(|_| "stdio".into());
@@ -509,15 +537,13 @@ async fn main() -> anyhow::Result<()> {
             running.waiting().await.context("rmcp service ended")?;
         }
         "http" => {
-            let cfg = transport_http::HttpConfig::from_env()
-                .context("invalid http transport config")?;
+            let cfg =
+                transport_http::HttpConfig::from_env().context("invalid http transport config")?;
             transport_http::serve(server, cfg)
                 .await
                 .context("http transport exited with error")?;
         }
-        other => anyhow::bail!(
-            "unknown CHAT_MCP_TRANSPORT={other:?}; expected `stdio` or `http`"
-        ),
+        other => anyhow::bail!("unknown CHAT_MCP_TRANSPORT={other:?}; expected `stdio` or `http`"),
     }
     Ok(())
 }

@@ -83,7 +83,9 @@ impl BackendConfig {
         // Unset or empty key = auth-off mode. Backend's ApiKey
         // extractor mirrors this, so the bearer header is harmless
         // when omitted on both ends.
-        let api_key = std::env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
+        let api_key = std::env::var("CHAT_MCP_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
         // Long-running SSE: rely on reqwest's default (no timeout).
         // Don't call `.timeout(...)` here — a zero-duration value
         // would mean *immediate* timeout, not unbounded.
@@ -197,8 +199,7 @@ impl BackendConfig {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let mut es = EventSource::new(req)
-            .map_err(|e| BackendError::Sse(e.to_string()))?;
+        let mut es = EventSource::new(req).map_err(|e| BackendError::Sse(e.to_string()))?;
 
         while let Some(event) = es.next().await {
             match event {
@@ -206,10 +207,8 @@ impl BackendConfig {
                 Ok(SseEvent::Message(msg)) => {
                     let kind = msg.event.as_str();
                     let parsed = decode_event(kind, &msg.data)?;
-                    let is_terminal = matches!(
-                        parsed,
-                        BackendEvent::Done(_) | BackendEvent::Error(_)
-                    );
+                    let is_terminal =
+                        matches!(parsed, BackendEvent::Done(_) | BackendEvent::Error(_));
                     if tx.send(parsed).await.is_err() {
                         // Consumer dropped — close the stream so the
                         // backend stops sampling. EventSource::close
