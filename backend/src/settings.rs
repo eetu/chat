@@ -74,19 +74,21 @@ pub struct OidcSettings {
 
 impl Settings {
     pub fn from_env() -> Self {
-        let port = env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080);
+        let port = env::var("PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(8080);
         let static_dir = env::var("STATIC_DIR").unwrap_or_else(|_| "../frontend/dist".into());
         let db_path = env::var("CHAT_DB_PATH").unwrap_or_else(|_| "chat.db".into());
-        let ollama_url =
-            env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
+        let ollama_url = env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".into());
         let ollama_model_lock = env::var("OLLAMA_MODEL").ok().filter(|s| !s.is_empty());
-        let prompt_refiner_model =
-            env::var("PROMPT_REFINER_MODEL").ok().filter(|s| !s.is_empty());
+        let prompt_refiner_model = env::var("PROMPT_REFINER_MODEL")
+            .ok()
+            .filter(|s| !s.is_empty());
         let comfyui_url = env::var("COMFYUI_URL").ok().filter(|s| !s.is_empty());
         let whisper_url = env::var("WHISPER_URL").ok().filter(|s| !s.is_empty());
         let piper_url = env::var("PIPER_URL").ok().filter(|s| !s.is_empty());
-        let embedding_model =
-            env::var("EMBEDDING_MODEL").ok().filter(|s| !s.is_empty());
+        let embedding_model = env::var("EMBEDDING_MODEL").ok().filter(|s| !s.is_empty());
         let rag_top_k = env::var("RAG_TOP_K")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -103,9 +105,10 @@ impl Settings {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(30);
-        let session_key_hex = env::var("SESSION_KEY")
-            .unwrap_or_else(|_| "0".repeat(128));
-        let dev_auth = env::var("DEV_AUTH").map(|v| v == "1" || v == "true").unwrap_or(false);
+        let session_key_hex = env::var("SESSION_KEY").unwrap_or_else(|_| "0".repeat(128));
+        let dev_auth = env::var("DEV_AUTH")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
         let chat_rate_per_min = env::var("CHAT_RATE_PER_MIN")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -140,7 +143,12 @@ impl Settings {
             (Ok(issuer), Ok(client_id), Ok(client_secret), Ok(redirect_url))
                 if !issuer.is_empty() =>
             {
-                Some(OidcSettings { issuer, client_id, client_secret, redirect_url })
+                Some(OidcSettings {
+                    issuer,
+                    client_id,
+                    client_secret,
+                    redirect_url,
+                })
             }
             _ => None,
         };

@@ -36,9 +36,7 @@ const SESSION_KEY_NEXT: &str = "oidc.next";
 /// canonical path or `"/"` as default.
 fn sanitize_next(raw: Option<&str>) -> String {
     match raw {
-        Some(s) if s.starts_with('/') && !s.starts_with("//") && !s.contains('\\') => {
-            s.to_string()
-        }
+        Some(s) if s.starts_with('/') && !s.starts_with("//") && !s.contains('\\') => s.to_string(),
         _ => "/".to_string(),
     }
 }
@@ -215,14 +213,19 @@ pub async fn login(
     if state.settings.dev_auth {
         let username = query.username.clone().unwrap_or_else(|| "dev".into());
         let sub = format!("dev:{username}");
-        let user = AuthUser { sub: sub.clone(), username: username.clone() };
+        let user = AuthUser {
+            sub: sub.clone(),
+            username: username.clone(),
+        };
         if let Err(e) = state.storage.upsert_user(&sub, &username) {
             tracing::error!("upsert_user failed: {e}");
         }
         if let Err(e) = session.insert(SESSION_KEY_USER, &user) {
             tracing::error!("session insert failed: {e}");
         }
-        return HttpResponse::Found().append_header(("Location", next)).finish();
+        return HttpResponse::Found()
+            .append_header(("Location", next))
+            .finish();
     }
 
     HttpResponse::ServiceUnavailable().json(serde_json::json!({
@@ -303,8 +306,7 @@ pub async fn callback(
         Ok(c) => c,
         Err(e) => {
             tracing::error!("oidc exchange failed: {e}");
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": e.to_string()}));
+            return HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}));
         }
     };
 
@@ -312,14 +314,19 @@ pub async fn callback(
         tracing::error!("upsert_user failed: {e}");
     }
 
-    let user = AuthUser { sub: claims.sub, username: claims.username };
+    let user = AuthUser {
+        sub: claims.sub,
+        username: claims.username,
+    };
     if let Err(e) = session.insert(SESSION_KEY_USER, &user) {
         tracing::error!("session user insert: {e}");
         return HttpResponse::InternalServerError().finish();
     }
 
     let dest = sanitize_next(stored_next.as_deref());
-    HttpResponse::Found().append_header(("Location", dest)).finish()
+    HttpResponse::Found()
+        .append_header(("Location", dest))
+        .finish()
 }
 
 /// POST /auth/logout

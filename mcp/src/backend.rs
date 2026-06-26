@@ -8,6 +8,8 @@
 //! single-shot results so previews have nowhere to land), and resolve
 //! the tool result from the `done` event.
 
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine as _;
 use chat_shared::{
     ErrorPayload, ImageResponse, Img2ImgRequest, InpaintRequest, PreviewPayload, ProgressPayload,
     Txt2ImgRequest,
@@ -81,7 +83,9 @@ impl BackendConfig {
         // Unset or empty key = auth-off mode. Backend's ApiKey
         // extractor mirrors this, so the bearer header is harmless
         // when omitted on both ends.
-        let api_key = std::env::var("CHAT_MCP_API_KEY").ok().filter(|s| !s.is_empty());
+        let api_key = std::env::var("CHAT_MCP_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty());
         // Long-running SSE: rely on reqwest's default (no timeout).
         // Don't call `.timeout(...)` here — a zero-duration value
         // would mean *immediate* timeout, not unbounded.
@@ -100,6 +104,59 @@ impl BackendConfig {
     /// `CHAT_BACKEND_PUBLIC_URL` diverges.
     pub fn image_url(&self, uuid: &str) -> String {
         format!("{}/api/v1/images/{}.png", self.public_url, uuid)
+    }
+
+    /// Re-hydrate an image *reference* into inline base64 (no `data:`
+    /// prefix), so an agent can chain edits by passing back the short
+    /// id/URL it got from a previous render instead of re-supplying the
+    /// raw bytes (which it can't — a ~125 KB base64 blob won't fit in a
+    /// tool-call argument).
+    ///
+    /// A `reference` is interpreted, in order:
+    ///   1. `http(s)://…` — fetched as-is. Covers the public capability
+    ///      URL from a prior render (`image_url`) and any other reachable
+    ///      image.
+    ///   2. a bare image id, `<uuid>` or `<uuid>.png` (the `uuid` from a
+    ///      prior `done` event) — fetched from `/api/v1/images/<uuid>.png`
+    ///      on the *internal* `base_url`.
+    ///   3. anything else — assumed to already be inline base64 and
+    ///      returned unchanged, so existing callers keep working.
+    ///
+    /// The `/api/v1/images/{uuid}.png` route is unauthenticated by design
+    /// (capability URL), so no bearer is attached — and we deliberately
+    /// never attach it to arbitrary external URLs either, to avoid
+    /// leaking the MCP key off-host.
+    pub async fn resolve_image(&self, reference: &str) -> Result<String, BackendError> {
+        let url = if reference.starts_with("http://") || reference.starts_with("https://") {
+            reference.to_string()
+        } else if let Some(uuid) = as_image_id(reference) {
+            format!("{}/api/v1/images/{}.png", self.base_url, uuid)
+        } else {
+            // Not a reference — already inline base64.
+            return Ok(reference.to_string());
+        };
+
+        let resp = self.client.get(&url).send().await?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(BackendError::Status {
+                status: status.as_u16(),
+                body,
+            });
+        }
+        let bytes = resp.bytes().await?;
+        Ok(STANDARD.encode(&bytes))
+    }
+
+    /// Resolve a batch of image references, preserving order. Used for
+    /// `chat_img2img`'s `images` list.
+    pub async fn resolve_images(&self, refs: &[String]) -> Result<Vec<String>, BackendError> {
+        let mut out = Vec::with_capacity(refs.len());
+        for r in refs {
+            out.push(self.resolve_image(r).await?);
+        }
+        Ok(out)
     }
 
     /// POST `/api/v1/txt2img` and pump SSE events into `tx`.
@@ -142,8 +199,7 @@ impl BackendConfig {
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
-        let mut es = EventSource::new(req)
-            .map_err(|e| BackendError::Sse(e.to_string()))?;
+        let mut es = EventSource::new(req).map_err(|e| BackendError::Sse(e.to_string()))?;
 
         while let Some(event) = es.next().await {
             match event {
@@ -151,10 +207,8 @@ impl BackendConfig {
                 Ok(SseEvent::Message(msg)) => {
                     let kind = msg.event.as_str();
                     let parsed = decode_event(kind, &msg.data)?;
-                    let is_terminal = matches!(
-                        parsed,
-                        BackendEvent::Done(_) | BackendEvent::Error(_)
-                    );
+                    let is_terminal =
+                        matches!(parsed, BackendEvent::Done(_) | BackendEvent::Error(_));
                     if tx.send(parsed).await.is_err() {
                         // Consumer dropped — close the stream so the
                         // backend stops sampling. EventSource::close
@@ -186,6 +240,26 @@ impl BackendConfig {
     }
 }
 
+/// Return the bare uuid when `s` is an image id — `<uuid>` or
+/// `<uuid>.png` in the canonical 8-4-4-4-12 hyphenated form. A base64
+/// blob never matches (wrong length, non-hex bytes, no hyphens at the
+/// fixed offsets), so reference-detection can't misfire on real image
+/// data.
+fn as_image_id(s: &str) -> Option<&str> {
+    let id = s.strip_suffix(".png").unwrap_or(s);
+    is_canonical_uuid(id).then_some(id)
+}
+
+fn is_canonical_uuid(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.len() != 36 {
+        return false;
+    }
+    b.iter().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => *c == b'-',
+        _ => c.is_ascii_hexdigit(),
+    })
+}
 fn decode_event(kind: &str, data: &str) -> Result<BackendEvent, BackendError> {
     match kind {
         "queued" => Ok(BackendEvent::Queued),
@@ -210,5 +284,32 @@ fn decode_event(kind: &str, data: &str) -> Result<BackendEvent, BackendError> {
             Ok(BackendEvent::Error(p))
         }
         other => Err(BackendError::Sse(format!("unknown event: {other}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_bare_and_suffixed_uuids() {
+        let uuid = "f47ac10b-58cc-4372-a567-0e02b2c3d479";
+        assert_eq!(as_image_id(uuid), Some(uuid));
+        assert_eq!(as_image_id(&format!("{uuid}.png")), Some(uuid));
+    }
+
+    #[test]
+    fn rejects_base64_and_other_non_ids() {
+        // A real base64 PNG blob must never be mistaken for an id, or
+        // resolve_image would try to fetch garbage instead of passing
+        // the bytes through.
+        let b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        assert_eq!(as_image_id(b64), None);
+        assert_eq!(as_image_id(""), None);
+        assert_eq!(as_image_id("not-a-uuid"), None);
+        // Right length, wrong hyphen placement.
+        assert_eq!(as_image_id("f47ac10b58cc-4372-a567-0e02b2c3d4790"), None);
+        // Right length & hyphens, non-hex byte.
+        assert_eq!(as_image_id("g47ac10b-58cc-4372-a567-0e02b2c3d479"), None);
     }
 }

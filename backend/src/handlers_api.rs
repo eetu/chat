@@ -177,10 +177,7 @@ pub async fn txt2img(
 ///
 /// 404 on unknown / expired ids. The blob's TTL is set by
 /// `CHAT_IMAGE_BUFFER_TTL_SECS` (default 30 min).
-pub async fn get_image(
-    state: web::Data<Arc<AppState>>,
-    path: web::Path<String>,
-) -> HttpResponse {
+pub async fn get_image(state: web::Data<Arc<AppState>>, path: web::Path<String>) -> HttpResponse {
     let raw = path.into_inner();
     // Tolerate `<uuid>.png` and bare `<uuid>` — the extension is for
     // URL aesthetics and tools that infer mime from filename.
@@ -192,10 +189,7 @@ pub async fn get_image(
     match state.image_buffer.get(id, ttl).await {
         Some(blob) => HttpResponse::Ok()
             .content_type(blob.mime)
-            .insert_header((
-                "Cache-Control",
-                "private, max-age=300, must-revalidate",
-            ))
+            .insert_header(("Cache-Control", "private, max-age=300, must-revalidate"))
             .body(blob.bytes),
         None => HttpResponse::NotFound().finish(),
     }
@@ -314,9 +308,7 @@ async fn acquire_image_permit(
 /// onto the SSE channel. `try_send` is used so a slow consumer drops
 /// preview frames rather than back-pressuring sampling — the agent
 /// gets the final image regardless and previews are best-effort UX.
-fn make_progress_cb(
-    tx: mpsc::Sender<Result<sse::Event, Infallible>>,
-) -> comfyui::ProgressCallback {
+fn make_progress_cb(tx: mpsc::Sender<Result<sse::Event, Infallible>>) -> comfyui::ProgressCallback {
     Arc::new(move |evt| {
         let payload = match evt {
             comfyui::ProgressEvent::Progress { value, max } => ollama::sse_json(
@@ -360,9 +352,7 @@ async fn finish(
             {
                 Ok(id) => id.to_string(),
                 Err(e) => {
-                    tracing::warn!(
-                        "image buffer insert failed (returning inline only): {e}"
-                    );
+                    tracing::warn!("image buffer insert failed (returning inline only): {e}");
                     String::new()
                 }
             };
@@ -385,12 +375,10 @@ async fn finish(
             let _ = tx
                 .send(Ok(ollama::sse_json(
                     "error",
-                    &serde_json::to_value(ErrorPayload { message: msg })
-                        .unwrap_or_default(),
+                    &serde_json::to_value(ErrorPayload { message: msg }).unwrap_or_default(),
                 )))
                 .await;
         }
     }
     comfyui::free_memory(state).await;
 }
-

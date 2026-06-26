@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use actix_cors::Cors;
 use actix_files::Files;
-use actix_session::{config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware};
+use actix_session::{
+    config::CookieContentSecurity, storage::CookieSessionStore, SessionMiddleware,
+};
 use actix_web::{cookie::Key, middleware::DefaultHeaders, web, App, HttpServer};
 use tracing_actix_web::TracingLogger;
 
@@ -57,13 +59,19 @@ pub struct CapsCache {
 
 impl CapsCache {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
     }
 
     pub async fn get(&self, key: &str) -> Option<ModelCapabilities> {
         let map = self.inner.lock().await;
         map.get(key).and_then(|(at, caps)| {
-            if at.elapsed() < CAPS_TTL { Some(caps.clone()) } else { None }
+            if at.elapsed() < CAPS_TTL {
+                Some(caps.clone())
+            } else {
+                None
+            }
         })
     }
 
@@ -114,7 +122,6 @@ pub fn create_app(
     state: Arc<AppState>,
     static_dir: &str,
 ) -> App<
-
     impl actix_web::dev::ServiceFactory<
         actix_web::dev::ServiceRequest,
         Config = (),
@@ -196,9 +203,7 @@ pub fn create_app(
                             // the wire, so the JSON cap allows for the
                             // raw byte limit plus that overhead plus a
                             // small header margin.
-                            web::JsonConfig::default().limit(
-                                document_limit * 4 / 3 + 64 * 1024,
-                            ),
+                            web::JsonConfig::default().limit(document_limit * 4 / 3 + 64 * 1024),
                         )
                         .route(web::get().to(handlers::list_documents))
                         .route(web::post().to(handlers::upload_document)),
@@ -295,8 +300,8 @@ pub async fn run_server() -> std::io::Result<()> {
     let static_dir = settings.static_dir.clone();
     let db_path = settings.db_path.clone();
 
-    let storage = Storage::open(std::path::Path::new(&db_path))
-        .expect("failed to open SQLite database");
+    let storage =
+        Storage::open(std::path::Path::new(&db_path)).expect("failed to open SQLite database");
 
     // OIDC discovery is lazy (not at boot): kanidm may boot concurrently
     // with us, and a failed one-shot boot discovery would wedge auth until a
@@ -347,8 +352,7 @@ pub async fn run_server() -> std::io::Result<()> {
 }
 
 pub fn create_test_state() -> Arc<AppState> {
-    let storage = Storage::open(std::path::Path::new(":memory:"))
-        .expect("in-memory db");
+    let storage = Storage::open(std::path::Path::new(":memory:")).expect("in-memory db");
     Arc::new(AppState {
         settings: Settings::test_defaults(),
         http_client: reqwest::Client::new(),

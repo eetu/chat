@@ -22,8 +22,8 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use chat_shared::{
-    Img2ImgRequest, InpaintRequest, Txt2ImgRequest, DEFAULT_INPAINT_STEPS,
-    DEFAULT_KONTEXT_STEPS, MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
+    Img2ImgRequest, InpaintRequest, Txt2ImgRequest, DEFAULT_INPAINT_STEPS, DEFAULT_KONTEXT_STEPS,
+    MAX_INPAINT_STEPS, MAX_KONTEXT_STEPS, MIN_STEPS,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -41,7 +41,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tracing_subscriber::EnvFilter;
 
-use crate::backend::{BackendConfig, BackendEvent};
+use crate::backend::{BackendConfig, BackendError, BackendEvent};
 
 /// Parameters for `chat_txt2img`. Pure text-to-image — no reference
 /// image, no mask.
@@ -79,8 +79,12 @@ struct Img2ImgArgs {
     /// stormy", "add a wizard hat to the cat", "convert to oil
     /// painting style".
     prompt: String,
-    /// One or more reference images as base64 PNG/JPEG (no `data:`
-    /// prefix). The first image is the denoising target; any
+    /// One or more reference images. Each entry is EITHER inline base64
+    /// PNG/JPEG (no `data:` prefix) OR a reference to an image already
+    /// held by the service — the `uuid` (or full URL) from a previous
+    /// render's result. Prefer the reference form when chaining edits:
+    /// it avoids re-sending the bytes (a base64 blob won't fit in a tool
+    /// argument). The first image is the denoising target; any
     /// additional images chain as Kontext references that influence
     /// the result without becoming the output canvas.
     images: Vec<String>,
@@ -111,11 +115,16 @@ struct InpaintArgs {
     /// deformed hands".
     #[serde(default)]
     negative_prompt: Option<String>,
-    /// Base image, base64 PNG/JPEG (no `data:` prefix).
+    /// Base image. Either inline base64 PNG/JPEG (no `data:` prefix) OR
+    /// a reference to an image the service already holds — the `uuid`
+    /// (or full URL) from a previous render's result. Prefer the
+    /// reference form to repaint a just-generated image without
+    /// re-sending its bytes.
     image: String,
-    /// Mask aligned to `image`, base64 PNG. Red channel: white pixels
-    /// mark the region to repaint, black pixels mark the region to
-    /// keep unchanged.
+    /// Mask aligned to `image`. Either inline base64 PNG (no `data:`
+    /// prefix) or a `uuid`/URL reference, same as `image`. Red channel:
+    /// white pixels mark the region to repaint, black pixels mark the
+    /// region to keep unchanged.
     mask: String,
     /// Sampler steps. Higher = better quality, slower. Defaults to 20
     /// (balanced).
@@ -171,14 +180,20 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
             negative_prompt: args.negative_prompt,
             steps: args.steps,
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Txt2Img(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Txt2Img(body),
+            args.inline,
+        )
+        .await
     }
 
     #[tool(
         name = "chat_img2img",
         description = "Edit one or more reference images using the Flux Kontext model and return a new PNG.
 
-Provide a natural-language edit instruction in `prompt` and one or more base64-encoded reference images in `images`. The first image is the denoising target; additional images influence the result as Kontext references.
+Provide a natural-language edit instruction in `prompt` and one or more reference images in `images`. Each image is either inline base64 OR a `uuid`/URL reference to an image the service already holds (e.g. the result of a previous render) — use the reference form when editing an image you just generated so you don't have to re-send its bytes. The first image is the denoising target; additional images influence the result as Kontext references.
 
 Speed / quality tradeoff via `steps`:
   - 4-6: fast preview (~30-60s warm), lower fidelity
@@ -201,19 +216,33 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
         Parameters(args): Parameters<Img2ImgArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let images = match self.backend.resolve_images(&args.images).await {
+            Ok(v) => v,
+            Err(e) => return Ok(reference_error(e)),
+        };
         let body = Img2ImgRequest {
             prompt: args.prompt,
-            images: args.images,
-            steps: Some(args.steps.unwrap_or(DEFAULT_KONTEXT_STEPS).clamp(MIN_STEPS, MAX_KONTEXT_STEPS)),
+            images,
+            steps: Some(
+                args.steps
+                    .unwrap_or(DEFAULT_KONTEXT_STEPS)
+                    .clamp(MIN_STEPS, MAX_KONTEXT_STEPS),
+            ),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Img2Img(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Img2Img(body),
+            args.inline,
+        )
+        .await
     }
 
     #[tool(
         name = "chat_inpaint",
         description = "Repaint a masked region of an image using the Flux Fill model and return a new PNG.
 
-`image` is the base image, `mask` is the inpaint mask (same size). In the mask's red channel, white pixels mark the region to repaint and black pixels mark the region to keep. Both fields are base64 PNG / JPEG without a `data:` prefix.
+`image` is the base image, `mask` is the inpaint mask (same size). In the mask's red channel, white pixels mark the region to repaint and black pixels mark the region to keep. Each of `image` and `mask` is either inline base64 PNG/JPEG (no `data:` prefix) OR a `uuid`/URL reference to an image the service already holds — use the reference form for `image` to repaint a just-generated image without re-sending its bytes.
 
 `prompt` describes what to paint into the masked region. `negative_prompt` is optional and actually influences sampling because Flux Fill uses real CFG.
 
@@ -238,14 +267,32 @@ By default the result contains a fetch URL only — the PNG bytes are NOT in you
         Parameters(args): Parameters<InpaintArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
+        let image = match self.backend.resolve_image(&args.image).await {
+            Ok(v) => v,
+            Err(e) => return Ok(reference_error(e)),
+        };
+        let mask = match self.backend.resolve_image(&args.mask).await {
+            Ok(v) => v,
+            Err(e) => return Ok(reference_error(e)),
+        };
         let body = InpaintRequest {
             prompt: args.prompt,
-            image: args.image,
-            mask: args.mask,
+            image,
+            mask,
             negative_prompt: args.negative_prompt,
-            steps: Some(args.steps.unwrap_or(DEFAULT_INPAINT_STEPS).clamp(MIN_STEPS, MAX_INPAINT_STEPS)),
+            steps: Some(
+                args.steps
+                    .unwrap_or(DEFAULT_INPAINT_STEPS)
+                    .clamp(MIN_STEPS, MAX_INPAINT_STEPS),
+            ),
         };
-        run_tool(self.backend.clone(), ctx, BackendJob::Inpaint(body), args.inline).await
+        run_tool(
+            self.backend.clone(),
+            ctx,
+            BackendJob::Inpaint(body),
+            args.inline,
+        )
+        .await
     }
 }
 
@@ -281,6 +328,11 @@ impl ServerHandler for ChatImageTools {
                    `inline: true` when you need to see the image yourself \
                    (chained edits, visual critique) — that's the only time \
                    the bytes enter your context window.\n\
+                 - To chain edits (img2img/inpaint a freshly-generated \
+                   image), pass that render's `uuid` (or its URL) straight \
+                   into the next call's image field instead of base64. The \
+                   service re-hydrates the pixels itself, so you never have \
+                   to hold or re-send the bytes.\n\
                  - All three support a `steps` knob (low = fast draft, high = \
                    better quality) and a `negative_prompt` that influences \
                    sampling via real CFG."
@@ -363,16 +415,19 @@ async fn run_tool(
 
     // Drain the pump's outcome so a transport error (network, 401)
     // surfaces as a tool error rather than getting silently swallowed.
-    let pump_result = pump.await.unwrap_or_else(|e| {
-        Err(backend::BackendError::Sse(format!("join: {e}")))
-    });
+    let pump_result = pump
+        .await
+        .unwrap_or_else(|e| Err(backend::BackendError::Sse(format!("join: {e}"))));
 
     match (final_b64, final_error, pump_result) {
-        (Some(b64), _, _) => Ok(success_result(&backend, &b64, final_uuid.as_deref(), inline)),
+        (Some(b64), _, _) => Ok(success_result(
+            &backend,
+            &b64,
+            final_uuid.as_deref(),
+            inline,
+        )),
         (None, Some(msg), _) => Ok(CallToolResult::error(vec![Content::text(msg)])),
-        (None, None, Err(e)) => Ok(CallToolResult::error(vec![Content::text(
-            e.to_string(),
-        )])),
+        (None, None, Err(e)) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
         (None, None, Ok(())) => Ok(CallToolResult::error(vec![Content::text(
             "backend stream ended without a result",
         )])),
@@ -425,6 +480,15 @@ fn success_result(
     CallToolResult::success(content)
 }
 
+/// Turn a failed image-reference resolution into a tool error the agent
+/// can act on (bad/expired uuid, unreachable URL, etc.) rather than a
+/// transport-level failure.
+fn reference_error(e: BackendError) -> CallToolResult {
+    CallToolResult::error(vec![Content::text(format!(
+        "failed to resolve image reference: {e}"
+    ))])
+}
+
 async fn notify_progress(
     peer: &rmcp::service::Peer<RoleServer>,
     token: &Option<ProgressToken>,
@@ -452,14 +516,13 @@ async fn main() -> anyhow::Result<()> {
     // subscriber already targets stderr.
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("chat_mcp=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("chat_mcp=info")),
         )
         .with_writer(std::io::stderr)
         .init();
 
-    let backend = BackendConfig::from_env()
-        .context("failed to load backend config from environment")?;
+    let backend =
+        BackendConfig::from_env().context("failed to load backend config from environment")?;
     tracing::info!("connecting to chat backend at {}", backend.base_url);
 
     let transport = std::env::var("CHAT_MCP_TRANSPORT").unwrap_or_else(|_| "stdio".into());
@@ -474,15 +537,13 @@ async fn main() -> anyhow::Result<()> {
             running.waiting().await.context("rmcp service ended")?;
         }
         "http" => {
-            let cfg = transport_http::HttpConfig::from_env()
-                .context("invalid http transport config")?;
+            let cfg =
+                transport_http::HttpConfig::from_env().context("invalid http transport config")?;
             transport_http::serve(server, cfg)
                 .await
                 .context("http transport exited with error")?;
         }
-        other => anyhow::bail!(
-            "unknown CHAT_MCP_TRANSPORT={other:?}; expected `stdio` or `http`"
-        ),
+        other => anyhow::bail!("unknown CHAT_MCP_TRANSPORT={other:?}; expected `stdio` or `http`"),
     }
     Ok(())
 }

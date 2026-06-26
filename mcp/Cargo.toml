@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 chat-shared = { path = "../shared" }
+base64 = { workspace = true }
 rmcp = { version = "0.8", features = ["server", "transport-io", "transport-streamable-http-server", "macros", "schemars"] }
 axum = "0.8"
 tower = "0.5"

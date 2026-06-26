@@ -63,8 +63,18 @@ pub struct ChatStats {
 }
 
 pub async fn list_models(state: &AppState) -> Result<serde_json::Value, reqwest::Error> {
-    let url = format!("{}/api/tags", state.settings.ollama_url.trim_end_matches('/'));
-    state.http_client.get(&url).send().await?.error_for_status()?.json().await
+    let url = format!(
+        "{}/api/tags",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
+    state
+        .http_client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
 }
 
 /// Hint Ollama to unload a model. Posts a noop generation with
@@ -74,7 +84,10 @@ pub async fn list_models(state: &AppState) -> Result<serde_json::Value, reqwest:
 /// chat / refiner model would otherwise blow past available VRAM/RAM.
 /// Best-effort — log on failure, never propagate.
 pub async fn evict(state: &AppState, model: &str) {
-    let url = format!("{}/api/generate", state.settings.ollama_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/generate",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({
         "model": model,
         "prompt": "",
@@ -121,7 +134,10 @@ pub async fn show_capabilities(
     state: &AppState,
     model: &str,
 ) -> Result<ModelCapabilities, reqwest::Error> {
-    let url = format!("{}/api/show", state.settings.ollama_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/show",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
     let res = state
         .http_client
         .post(&url)
@@ -130,10 +146,7 @@ pub async fn show_capabilities(
         .await?
         .error_for_status()?;
     let parsed: ShowResponse = res.json().await?;
-    let families = parsed
-        .details
-        .and_then(|d| d.families)
-        .unwrap_or_default();
+    let families = parsed.details.and_then(|d| d.families).unwrap_or_default();
     let vision_family = families
         .iter()
         .any(|f| matches!(f.as_str(), "clip" | "mllama" | "vision" | "siglip"));
@@ -141,8 +154,8 @@ pub async fn show_capabilities(
     let tools = parsed.capabilities.iter().any(|c| c == "tools");
     // Default `chat` to true when the capabilities array is empty (older
     // Ollama versions never populated it), so existing models keep working.
-    let chat = parsed.capabilities.is_empty()
-        || parsed.capabilities.iter().any(|c| c == "completion");
+    let chat =
+        parsed.capabilities.is_empty() || parsed.capabilities.iter().any(|c| c == "completion");
     Ok(ModelCapabilities {
         vision,
         tools,
@@ -171,11 +184,10 @@ pub async fn summarize_title(
     let messages = vec![
         ChatMessage {
             role: "system".into(),
-            content:
-                "You name conversations. Reply with a 3 to 6 word lowercase title \
+            content: "You name conversations. Reply with a 3 to 6 word lowercase title \
                  summarizing the conversation. No quotes. No punctuation. \
                  No markdown. No prefixes like 'title:'. Just the title."
-                    .into(),
+                .into(),
             images: None,
         },
         ChatMessage {
@@ -188,7 +200,10 @@ pub async fn summarize_title(
         },
     ];
 
-    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/chat",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -233,7 +248,10 @@ pub async fn describe_image(
         },
     ];
 
-    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/chat",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -296,7 +314,10 @@ pub async fn refine_image_prompt(
     });
     messages.extend(history.iter().cloned());
 
-    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/api/chat",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
@@ -339,9 +360,7 @@ fn parse_refined_prompt(raw: &str) -> RefinedPrompt {
             negative: s.negative.trim().to_string(),
         },
         Err(e) => {
-            tracing::warn!(
-                "refiner JSON parse failed: {e}; treating reply as positive-only"
-            );
+            tracing::warn!("refiner JSON parse failed: {e}; treating reply as positive-only");
             RefinedPrompt {
                 positive: trimmed.to_string(),
                 negative: String::new(),
@@ -372,7 +391,11 @@ fn sanitize_title(raw: &str) -> String {
         .chars()
         .filter(|c| c.is_alphanumeric() || c.is_whitespace() || matches!(*c, '-' | '_' | '/'))
         .collect();
-    cleaned.split_whitespace().take(8).collect::<Vec<_>>().join(" ")
+    cleaned
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[derive(Debug, Deserialize)]
@@ -398,8 +421,16 @@ struct TagsModel {
 /// model (capability cache is keyed by name, so repeat calls are
 /// cheap). Errors on /api/show are logged and the model is skipped.
 pub async fn list_embedding_models(state: &AppState) -> Result<Vec<String>, reqwest::Error> {
-    let url = format!("{}/api/tags", state.settings.ollama_url.trim_end_matches('/'));
-    let res = state.http_client.get(&url).send().await?.error_for_status()?;
+    let url = format!(
+        "{}/api/tags",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
+    let res = state
+        .http_client
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?;
     let parsed: TagsResponse = res.json().await?;
     let mut out = Vec::new();
     for m in parsed.models {
@@ -486,8 +517,15 @@ pub async fn stream_chat<F>(
 where
     F: FnMut(&str) -> bool,
 {
-    let url = format!("{}/api/chat", state.settings.ollama_url.trim_end_matches('/'));
-    let body = OllamaChatRequest { model, messages: &messages, stream: true };
+    let url = format!(
+        "{}/api/chat",
+        state.settings.ollama_url.trim_end_matches('/')
+    );
+    let body = OllamaChatRequest {
+        model,
+        messages: &messages,
+        stream: true,
+    };
 
     let res = state
         .http_client
@@ -542,7 +580,11 @@ where
                     }),
                     _ => None,
                 };
-                return Ok(StreamOutcome { content: full, completed: true, stats });
+                return Ok(StreamOutcome {
+                    content: full,
+                    completed: true,
+                    stats,
+                });
             }
         }
     }
@@ -590,9 +632,7 @@ mod tests {
 
     #[test]
     fn parses_json_inside_code_fence() {
-        let r = parse_refined_prompt(
-            "```json\n{\"positive\":\"p\",\"negative\":\"n\"}\n```",
-        );
+        let r = parse_refined_prompt("```json\n{\"positive\":\"p\",\"negative\":\"n\"}\n```");
         assert_eq!(r.positive, "p");
         assert_eq!(r.negative, "n");
     }

@@ -146,10 +146,7 @@ pub async fn serve(tools: ChatImageTools, cfg: HttpConfig) -> anyhow::Result<()>
             expected: Arc::new(key),
         };
         mcp_router = mcp_router.layer(
-            ServiceBuilder::new().layer(middleware::from_fn_with_state(
-                auth_state,
-                require_bearer,
-            )),
+            ServiceBuilder::new().layer(middleware::from_fn_with_state(auth_state, require_bearer)),
         );
         true
     } else {
