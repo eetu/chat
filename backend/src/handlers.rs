@@ -139,8 +139,7 @@ pub async fn list_models(state: web::Data<Arc<AppState>>) -> HttpResponse {
         Ok(v) => v,
         Err(e) => {
             tracing::error!("list_models upstream failed: {e}");
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": e.to_string()}));
+            return HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}));
         }
     };
     // Filter out embedding-only models — they have no chat surface and
@@ -157,18 +156,15 @@ pub async fn list_models(state: web::Data<Arc<AppState>>) -> HttpResponse {
             } else {
                 match ollama::show_capabilities(&state, name).await {
                     Ok(c) => {
-                        state
-                            .caps_cache
-                            .set(name.to_string(), c.clone())
-                            .await;
+                        state.caps_cache.set(name.to_string(), c.clone()).await;
                         c
                     }
                     Err(_) => ollama::ModelCapabilities::default(),
                 }
             };
             let has_embedding = caps.capabilities.iter().any(|c| c == "embedding");
-            let has_chat = caps.capabilities.is_empty()
-                || caps.capabilities.iter().any(|c| c == "completion");
+            let has_chat =
+                caps.capabilities.is_empty() || caps.capabilities.iter().any(|c| c == "completion");
             if has_embedding && !has_chat {
                 continue;
             }
@@ -184,10 +180,7 @@ pub struct CreateConvBody {
     pub model: Option<String>,
 }
 
-pub async fn list_conversations(
-    state: web::Data<Arc<AppState>>,
-    user: AuthUser,
-) -> HttpResponse {
+pub async fn list_conversations(state: web::Data<Arc<AppState>>, user: AuthUser) -> HttpResponse {
     match state.storage.list_conversations(&user.sub) {
         Ok(rows) => HttpResponse::Ok().json(rows),
         Err(e) => storage_err(e),
@@ -489,8 +482,7 @@ pub async fn list_embedding_models(
         Ok(models) => HttpResponse::Ok().json(serde_json::json!({ "models": models })),
         Err(e) => {
             tracing::warn!("list_embedding_models failed: {e}");
-            HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": e.to_string()}))
+            HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}))
         }
     }
 }
@@ -526,29 +518,25 @@ pub async fn upload_document(
     }
     let name = body.name.trim();
     if name.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "name required"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "name required"}));
     }
     use base64::engine::general_purpose::STANDARD as B64;
     use base64::Engine;
     let raw = match B64.decode(body.content_b64.as_bytes()) {
         Ok(b) => b,
         Err(e) => {
-            return HttpResponse::BadRequest().json(
-                serde_json::json!({"error": format!("base64 decode: {e}")}),
-            );
+            return HttpResponse::BadRequest()
+                .json(serde_json::json!({"error": format!("base64 decode: {e}")}));
         }
     };
     if raw.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "empty document"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "empty document"}));
     }
     if raw.len() > state.settings.max_document_bytes {
         let mb = state.settings.max_document_bytes / (1024 * 1024);
-        return HttpResponse::PayloadTooLarge()
-            .json(serde_json::json!({
-                "error": format!("file exceeds {mb} MB cap"),
-            }));
+        return HttpResponse::PayloadTooLarge().json(serde_json::json!({
+            "error": format!("file exceeds {mb} MB cap"),
+        }));
     }
     // Sniff PDF magic, otherwise decode as UTF-8 text. PDF extraction
     // is best-effort: image-only PDFs (no embedded text layer) come
@@ -587,8 +575,7 @@ pub async fn upload_document(
 
     let chunks = crate::rag::chunk_text(content);
     if chunks.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "nothing to index"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "nothing to index"}));
     }
 
     let mut embedded: Vec<(String, Vec<f32>)> = Vec::with_capacity(chunks.len());
@@ -607,20 +594,17 @@ pub async fn upload_document(
     }
 
     if embedded.is_empty() {
-        return HttpResponse::BadGateway()
-            .json(serde_json::json!({"error": "no chunks embedded"}));
+        return HttpResponse::BadGateway().json(serde_json::json!({"error": "no chunks embedded"}));
     }
 
-    let doc_id = match state.storage.create_document(
-        &user.sub,
-        name,
-        &mime,
-        raw.len() as i64,
-        &model,
-    ) {
-        Ok(id) => id,
-        Err(e) => return storage_err(e),
-    };
+    let doc_id =
+        match state
+            .storage
+            .create_document(&user.sub, name, &mime, raw.len() as i64, &model)
+        {
+            Ok(id) => id,
+            Err(e) => return storage_err(e),
+        };
     if let Err(e) = state.storage.insert_chunks(doc_id, &embedded) {
         // Best-effort rollback: drop the doc row so the user doesn't
         // see a half-ingested entry in the list.
@@ -636,10 +620,7 @@ pub async fn upload_document(
     }
 }
 
-pub async fn list_documents(
-    state: web::Data<Arc<AppState>>,
-    user: AuthUser,
-) -> HttpResponse {
+pub async fn list_documents(state: web::Data<Arc<AppState>>, user: AuthUser) -> HttpResponse {
     match state.storage.list_documents(&user.sub) {
         Ok(docs) => HttpResponse::Ok().json(docs),
         Err(e) => storage_err(e),
@@ -744,8 +725,7 @@ pub async fn transcribe(
             .json(serde_json::json!({"error": "voice input not configured"}));
     };
     if body.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "empty audio"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "empty audio"}));
     }
     let content_type = req
         .headers()
@@ -789,8 +769,7 @@ pub async fn transcribe(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("whisper request failed: {e}");
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": e.to_string()}));
+            return HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}));
         }
     };
     if !res.status().is_success() {
@@ -849,15 +828,19 @@ pub async fn tts(
     };
     let text = body.text.trim();
     if text.is_empty() {
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({"error": "empty text"}));
+        return HttpResponse::BadRequest().json(serde_json::json!({"error": "empty text"}));
     }
     // 8000 chars ≈ several minutes of speech — well above any sensible
     // assistant turn and tight enough to keep piper from melting on a
     // pathological paste.
     let clipped: String = text.chars().take(8_000).collect();
     let mut payload = serde_json::json!({ "text": clipped });
-    if let Some(voice) = body.voice.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(voice) = body
+        .voice
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         payload["voice"] = serde_json::Value::String(voice.to_string());
     }
     // Request opus over ogg from the upstream — ~32 kbps VBR for voice
@@ -875,8 +858,7 @@ pub async fn tts(
         Ok(r) => r,
         Err(e) => {
             tracing::warn!("piper request failed: {e}");
-            return HttpResponse::BadGateway()
-                .json(serde_json::json!({"error": e.to_string()}));
+            return HttpResponse::BadGateway().json(serde_json::json!({"error": e.to_string()}));
         }
     };
     if !res.status().is_success() {
@@ -948,9 +930,7 @@ pub async fn chat(
             ));
         }
         if mask.is_none() {
-            return Err(actix_web::error::ErrorBadRequest(
-                "inpaint requires a mask",
-            ));
+            return Err(actix_web::error::ErrorBadRequest("inpaint requires a mask"));
         }
     }
     if let Some(retry_id) = body.retry_assistant_id {
@@ -1025,9 +1005,7 @@ pub async fn chat(
     // conversation so subsequent turns and reopens default to it.
     let requested = body.model.as_deref().or(conv.model.as_deref());
     let model = ollama::resolve_model(&state, requested);
-    if state.settings.ollama_model_lock.is_none()
-        && conv.model.as_deref() != Some(model.as_str())
-    {
+    if state.settings.ollama_model_lock.is_none() && conv.model.as_deref() != Some(model.as_str()) {
         if let Err(e) = state
             .storage
             .set_conversation_model(&user.sub, &conv.id, &model)
@@ -1126,10 +1104,7 @@ pub async fn chat(
                 Ok(p) => p,
                 Err(tokio::sync::TryAcquireError::NoPermits) => {
                     let _ = tx
-                        .send(Ok(ollama::sse_json(
-                            "queued",
-                            &serde_json::json!({}),
-                        )))
+                        .send(Ok(ollama::sse_json("queued", &serde_json::json!({}))))
                         .await;
                     // Race the wait against client disconnect: if the user
                     // gives up (closes tab) while queued, abandon the job
@@ -1181,9 +1156,7 @@ pub async fn chat(
                             Ok(r) if !r.positive.is_empty() => Some(r),
                             Ok(_) => None,
                             Err(e) => {
-                                tracing::warn!(
-                                    "prompt refinement failed: {e} (using original)"
-                                );
+                                tracing::warn!("prompt refinement failed: {e} (using original)");
                                 None
                             }
                         }
@@ -1209,9 +1182,9 @@ pub async fn chat(
             };
             let composed_prompt = match (refined.as_ref(), &context_prefix) {
                 (Some(r), _) => r.positive.clone(),
-                (None, Some(ctx)) => format!(
-                    "Context from the previous image: {ctx}\n\nNew request: {prompt}"
-                ),
+                (None, Some(ctx)) => {
+                    format!("Context from the previous image: {ctx}\n\nNew request: {prompt}")
+                }
                 (None, None) => prompt.clone(),
             };
             // Negative-prompt precedence: explicit client override wins;
@@ -1246,8 +1219,8 @@ pub async fn chat(
             // when the client is slow is preferable to head-of-line
             // blocking the actual generation result.
             let progress_tx = tx.clone();
-            let progress_cb: comfyui::ProgressCallback = std::sync::Arc::new(
-                move |evt: comfyui::ProgressEvent| {
+            let progress_cb: comfyui::ProgressCallback =
+                std::sync::Arc::new(move |evt: comfyui::ProgressEvent| {
                     let payload = match evt {
                         comfyui::ProgressEvent::Progress { value, max } => ollama::sse_json(
                             "progress",
@@ -1257,14 +1230,12 @@ pub async fn chat(
                             "preview",
                             &serde_json::json!({"mime": mime, "b64": b64}),
                         ),
-                        comfyui::ProgressEvent::Queued { ahead } => ollama::sse_json(
-                            "queued",
-                            &serde_json::json!({"ahead": ahead}),
-                        ),
+                        comfyui::ProgressEvent::Queued { ahead } => {
+                            ollama::sse_json("queued", &serde_json::json!({"ahead": ahead}))
+                        }
                     };
                     let _ = progress_tx.try_send(Ok(payload));
-                },
-            );
+                });
             let gen_result = if let Some((base, mask_bytes)) = inpaint_inputs {
                 comfyui::generate_inpaint(
                     &state_clone,
@@ -1310,13 +1281,7 @@ pub async fn chat(
                     let caption = if let Some(r) = refined {
                         r.positive
                     } else if let Some(m) = refiner_model.as_deref() {
-                        let d = match ollama::describe_image(
-                            state_clone.clone(),
-                            m,
-                            &b64,
-                        )
-                        .await
-                        {
+                        let d = match ollama::describe_image(state_clone.clone(), m, &b64).await {
                             Ok(d) => d,
                             Err(e) => {
                                 tracing::warn!("image description failed: {e}");
@@ -1353,11 +1318,10 @@ pub async fn chat(
                     // "not found"): without the fallback the row stays
                     // stuck pending forever and the UI keeps polling it,
                     // re-triggering the leave-confirm on every nav.
-                    match state_clone.storage.delete_message_and_after(
-                        &user_sub,
-                        &conv_id,
-                        pending_id,
-                    ) {
+                    match state_clone
+                        .storage
+                        .delete_message_and_after(&user_sub, &conv_id, pending_id)
+                    {
                         Ok(()) => {}
                         Err(e) => {
                             tracing::warn!(
@@ -1378,8 +1342,7 @@ pub async fn chat(
                 Err(e) => {
                     let public = friendly_image_error(&e);
                     tracing::error!("image generation error: {e}");
-                    if let Err(persist_err) =
-                        state_clone.storage.fail_message(pending_id, &public)
+                    if let Err(persist_err) = state_clone.storage.fail_message(pending_id, &public)
                     {
                         tracing::error!("failed to mark message errored: {persist_err}");
                     }
@@ -1402,7 +1365,9 @@ pub async fn chat(
         });
 
         let stream = ReceiverStream::new(rx);
-        return Ok(sse::Sse::from_stream(stream).with_keep_alive(std::time::Duration::from_secs(30)));
+        return Ok(
+            sse::Sse::from_stream(stream).with_keep_alive(std::time::Duration::from_secs(30))
+        );
     }
 
     let rag_user_text = body.content.clone();
@@ -1418,8 +1383,7 @@ pub async fn chat(
         let stored = state_clone.storage.load_user_chunks(&user_sub).ok();
         if let Some(chunks) = stored.filter(|c| !c.is_empty()) {
             use std::collections::HashMap;
-            let mut by_model: HashMap<String, Vec<&crate::storage::StoredChunk>> =
-                HashMap::new();
+            let mut by_model: HashMap<String, Vec<&crate::storage::StoredChunk>> = HashMap::new();
             for ch in &chunks {
                 if ch.embedding_model.is_empty() {
                     continue;
@@ -1431,36 +1395,21 @@ pub async fn chat(
             }
             let mut ranked: Vec<(f32, &crate::storage::StoredChunk)> = Vec::new();
             for (model_name, group) in by_model {
-                match ollama::embed_text(
-                    &state_clone,
-                    &model_name,
-                    &rag_user_text,
-                )
-                .await
-                {
+                match ollama::embed_text(&state_clone, &model_name, &rag_user_text).await {
                     Ok(query_vec) if !query_vec.is_empty() => {
                         for ch in group {
-                            ranked.push((
-                                crate::rag::cosine(&query_vec, &ch.embedding),
-                                ch,
-                            ));
+                            ranked.push((crate::rag::cosine(&query_vec, &ch.embedding), ch));
                         }
                     }
                     Ok(_) => {
-                        tracing::warn!(
-                            "rag: empty query embedding for {model_name}"
-                        );
+                        tracing::warn!("rag: empty query embedding for {model_name}");
                     }
                     Err(e) => {
-                        tracing::warn!(
-                            "rag: embed failed ({model_name}): {e}"
-                        );
+                        tracing::warn!("rag: embed failed ({model_name}): {e}");
                     }
                 }
             }
-            ranked.sort_by(|a, b| {
-                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
             let top: Vec<_> = ranked
                 .into_iter()
                 .filter(|(score, _)| *score > 0.3)
@@ -1472,10 +1421,7 @@ pub async fn chat(
                      source name when you reference it:\n\n",
                 );
                 for (_, ch) in &top {
-                    prompt.push_str(&format!(
-                        "[{}]\n{}\n\n",
-                        ch.document_name, ch.content
-                    ));
+                    prompt.push_str(&format!("[{}]\n{}\n\n", ch.document_name, ch.content));
                 }
                 tracing::debug!(count = top.len(), "rag: injected chunks");
                 // Surface which documents were consulted so the UI can
@@ -1647,8 +1593,7 @@ fn friendly_image_error(e: &ollama::ChatStreamError) -> String {
                 .to_string()
         }
         ollama::ChatStreamError::ComfyTimeout => {
-            "image edit timed out — the comfyui job didn't finish in time"
-                .to_string()
+            "image edit timed out — the comfyui job didn't finish in time".to_string()
         }
         ollama::ChatStreamError::Cancelled => {
             // Reachable only if the friendly path is invoked for a Cancelled

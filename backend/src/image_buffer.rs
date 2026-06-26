@@ -63,11 +63,7 @@ impl ImageBuffer {
         };
         let mut g = self.inner.write().await;
         if g.len() >= limit {
-            if let Some(oldest_id) = g
-                .iter()
-                .min_by_key(|(_, b)| b.inserted_at)
-                .map(|(k, _)| *k)
-            {
+            if let Some(oldest_id) = g.iter().min_by_key(|(_, b)| b.inserted_at).map(|(k, _)| *k) {
                 g.remove(&oldest_id);
             }
         }
@@ -79,7 +75,9 @@ impl ImageBuffer {
     /// caller (`get_image`) turns that into a 404.
     pub async fn get(&self, id: Uuid, ttl: Duration) -> Option<ImageBlob> {
         let g = self.inner.read().await;
-        g.get(&id).cloned().filter(|b| b.inserted_at.elapsed() < ttl)
+        g.get(&id)
+            .cloned()
+            .filter(|b| b.inserted_at.elapsed() < ttl)
     }
 
     /// Drop everything older than `ttl`. Returns the count removed

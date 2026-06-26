@@ -298,9 +298,7 @@ async fn upload_image(
         ChatStreamError::EmptyImage
     })?;
     let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
-        tracing::warn!(
-            "rejecting unsupported image format for comfyui upload (#{label_for_logs})"
-        );
+        tracing::warn!("rejecting unsupported image format for comfyui upload (#{label_for_logs})");
         ChatStreamError::EmptyImage
     })?;
     let ext = crate::image_kind::extension(mime);
@@ -826,7 +824,10 @@ async fn watch_progress<F>(
                     Err(_) => continue,
                 };
                 let kind = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                let data = parsed.get("data").cloned().unwrap_or(serde_json::Value::Null);
+                let data = parsed
+                    .get("data")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
                 match kind {
                     "executing" => {
                         let pid = data.get("prompt_id").and_then(|v| v.as_str());
@@ -855,10 +856,8 @@ async fn watch_progress<F>(
                         if !matches {
                             continue;
                         }
-                        let value =
-                            data.get("value").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-                        let max =
-                            data.get("max").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let value = data.get("value").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let max = data.get("max").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                         on_event(ProgressEvent::Progress { value, max });
                     }
                     _ => {}
@@ -868,10 +867,8 @@ async fn watch_progress<F>(
                 if !is_ours || bytes.len() < 8 {
                     continue;
                 }
-                let event_type =
-                    u32::from_be_bytes(bytes[0..4].try_into().expect("4 bytes"));
-                let img_type =
-                    u32::from_be_bytes(bytes[4..8].try_into().expect("4 bytes"));
+                let event_type = u32::from_be_bytes(bytes[0..4].try_into().expect("4 bytes"));
+                let img_type = u32::from_be_bytes(bytes[4..8].try_into().expect("4 bytes"));
                 // BinaryEventTypes.PREVIEW_IMAGE = 1 in ComfyUI's server.py.
                 if event_type != 1 {
                     continue;
@@ -987,7 +984,9 @@ async fn queue_snapshot(state: &AppState, base: &str) -> Option<(Option<String>,
 /// interrupt when we can't confirm ownership, so errors collapse to
 /// `None`.
 async fn running_prompt_id(state: &AppState, base: &str) -> Option<String> {
-    queue_snapshot(state, base).await.and_then(|(running, _)| running)
+    queue_snapshot(state, base)
+        .await
+        .and_then(|(running, _)| running)
 }
 
 /// Remove the given prompt ids from ComfyUI's pending queue. No-op for

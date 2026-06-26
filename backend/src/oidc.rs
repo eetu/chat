@@ -105,7 +105,12 @@ impl OidcContext {
             .set_pkce_challenge(pkce_challenge)
             .url();
 
-        Authorize { url: auth_url, csrf, nonce, pkce_verifier }
+        Authorize {
+            url: auth_url,
+            csrf,
+            nonce,
+            pkce_verifier,
+        }
     }
 
     /// Exchange the authorization code for tokens and validate the ID token.
@@ -176,7 +181,10 @@ pub struct OidcLazy {
 
 impl OidcLazy {
     pub fn new(settings: Option<OidcSettings>) -> Self {
-        Self { settings, cached: RwLock::new(None) }
+        Self {
+            settings,
+            cached: RwLock::new(None),
+        }
     }
 
     /// Whether OIDC is configured at all (env vars present). `false` =

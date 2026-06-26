@@ -260,6 +260,32 @@ fn is_canonical_uuid(s: &str) -> bool {
         _ => c.is_ascii_hexdigit(),
     })
 }
+fn decode_event(kind: &str, data: &str) -> Result<BackendEvent, BackendError> {
+    match kind {
+        "queued" => Ok(BackendEvent::Queued),
+        "progress" => {
+            let p: ProgressPayload =
+                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
+            Ok(BackendEvent::Progress(p))
+        }
+        "preview" => {
+            let p: PreviewPayload =
+                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
+            Ok(BackendEvent::Preview(p))
+        }
+        "done" => {
+            let p: ImageResponse =
+                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
+            Ok(BackendEvent::Done(p))
+        }
+        "error" => {
+            let p: ErrorPayload =
+                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
+            Ok(BackendEvent::Error(p))
+        }
+        other => Err(BackendError::Sse(format!("unknown event: {other}"))),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -285,32 +311,5 @@ mod tests {
         assert_eq!(as_image_id("f47ac10b58cc-4372-a567-0e02b2c3d4790"), None);
         // Right length & hyphens, non-hex byte.
         assert_eq!(as_image_id("g47ac10b-58cc-4372-a567-0e02b2c3d479"), None);
-    }
-}
-
-fn decode_event(kind: &str, data: &str) -> Result<BackendEvent, BackendError> {
-    match kind {
-        "queued" => Ok(BackendEvent::Queued),
-        "progress" => {
-            let p: ProgressPayload =
-                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
-            Ok(BackendEvent::Progress(p))
-        }
-        "preview" => {
-            let p: PreviewPayload =
-                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
-            Ok(BackendEvent::Preview(p))
-        }
-        "done" => {
-            let p: ImageResponse =
-                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
-            Ok(BackendEvent::Done(p))
-        }
-        "error" => {
-            let p: ErrorPayload =
-                serde_json::from_str(data).map_err(|e| BackendError::Sse(e.to_string()))?;
-            Ok(BackendEvent::Error(p))
-        }
-        other => Err(BackendError::Sse(format!("unknown event: {other}"))),
     }
 }

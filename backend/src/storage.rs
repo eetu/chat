@@ -192,7 +192,9 @@ impl Storage {
                 tracing::debug!("embedding_model column migration noop: {e}");
             }
         }
-        Ok(Self { inner: Arc::new(Mutex::new(conn)) })
+        Ok(Self {
+            inner: Arc::new(Mutex::new(conn)),
+        })
     }
 
     pub fn upsert_user(&self, sub: &str, username: &str) -> Result<(), StorageError> {
@@ -266,11 +268,7 @@ impl Storage {
         }
     }
 
-    pub fn get_conversation(
-        &self,
-        user_sub: &str,
-        id: &str,
-    ) -> Result<Conversation, StorageError> {
+    pub fn get_conversation(&self, user_sub: &str, id: &str) -> Result<Conversation, StorageError> {
         let conn = self.inner.lock().unwrap();
         let conv = conn
             .query_row(
@@ -430,11 +428,7 @@ impl Storage {
         Ok(())
     }
 
-    pub fn fail_message(
-        &self,
-        message_id: i64,
-        error_text: &str,
-    ) -> Result<(), StorageError> {
+    pub fn fail_message(&self, message_id: i64, error_text: &str) -> Result<(), StorageError> {
         let conn = self.inner.lock().unwrap();
         conn.execute(
             "UPDATE messages SET content = ?1, status = 'error' WHERE id = ?2",
@@ -482,10 +476,7 @@ impl Storage {
     /// forwards user-side images to Ollama as part of `messages[].images`.
     /// Excludes mask blobs — those are inpaint inputs, not part of the
     /// vision history sent to chat models.
-    pub fn get_message_images_b64(
-        &self,
-        msg_id: i64,
-    ) -> Result<Vec<String>, StorageError> {
+    pub fn get_message_images_b64(&self, msg_id: i64) -> Result<Vec<String>, StorageError> {
         use base64::engine::general_purpose::STANDARD as B64;
         use base64::Engine;
         let conn = self.inner.lock().unwrap();
@@ -537,10 +528,7 @@ impl Storage {
 
     /// Base64 mask for the resend paths (edit / regenerate). Returns
     /// None when the message has no mask attached.
-    pub fn get_message_mask_b64(
-        &self,
-        msg_id: i64,
-    ) -> Result<Option<String>, StorageError> {
+    pub fn get_message_mask_b64(&self, msg_id: i64) -> Result<Option<String>, StorageError> {
         use base64::engine::general_purpose::STANDARD as B64;
         use base64::Engine;
         let conn = self.inner.lock().unwrap();
@@ -706,19 +694,16 @@ impl Storage {
              ORDER BY m.created_at DESC
              LIMIT ?3",
         )?;
-        let rows = stmt.query_map(
-            params![user_sub, fts, limit as i64],
-            |row| {
-                Ok(SearchHit {
-                    message_id: row.get(0)?,
-                    conv_id: row.get(1)?,
-                    conv_title: row.get(2)?,
-                    role: row.get(3)?,
-                    created_at: row.get(4)?,
-                    snippet: row.get(5)?,
-                })
-            },
-        )?;
+        let rows = stmt.query_map(params![user_sub, fts, limit as i64], |row| {
+            Ok(SearchHit {
+                message_id: row.get(0)?,
+                conv_id: row.get(1)?,
+                conv_title: row.get(2)?,
+                role: row.get(3)?,
+                created_at: row.get(4)?,
+                snippet: row.get(5)?,
+            })
+        })?;
         let hits: Vec<SearchHit> = rows.collect::<Result<_, _>>()?;
         tracing::debug!(
             user = user_sub,
@@ -791,11 +776,7 @@ impl Storage {
         rows.collect::<Result<_, _>>().map_err(Into::into)
     }
 
-    pub fn delete_document(
-        &self,
-        user_sub: &str,
-        document_id: i64,
-    ) -> Result<(), StorageError> {
+    pub fn delete_document(&self, user_sub: &str, document_id: i64) -> Result<(), StorageError> {
         let conn = self.inner.lock().unwrap();
         let owner: Option<String> = conn
             .query_row(
@@ -808,10 +789,7 @@ impl Storage {
             None => Err(StorageError::NotFound),
             Some(s) if s != user_sub => Err(StorageError::Forbidden),
             _ => {
-                conn.execute(
-                    "DELETE FROM documents WHERE id = ?1",
-                    [document_id],
-                )?;
+                conn.execute("DELETE FROM documents WHERE id = ?1", [document_id])?;
                 Ok(())
             }
         }
@@ -820,10 +798,7 @@ impl Storage {
     /// Load every chunk owned by `user_sub` along with its source
     /// document's name. Retrieval ranks these in-process via cosine
     /// against the embedded query.
-    pub fn load_user_chunks(
-        &self,
-        user_sub: &str,
-    ) -> Result<Vec<StoredChunk>, StorageError> {
+    pub fn load_user_chunks(&self, user_sub: &str) -> Result<Vec<StoredChunk>, StorageError> {
         let conn = self.inner.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT dc.document_id, d.name, d.embedding_model,
@@ -860,10 +835,7 @@ impl Storage {
     pub fn purge_older_than(&self, ttl_days: u32) -> Result<usize, StorageError> {
         let cutoff = Utc::now().timestamp() - i64::from(ttl_days) * 86_400;
         let conn = self.inner.lock().unwrap();
-        let n = conn.execute(
-            "DELETE FROM conversations WHERE updated_at < ?1",
-            [cutoff],
-        )?;
+        let n = conn.execute("DELETE FROM conversations WHERE updated_at < ?1", [cutoff])?;
         Ok(n)
     }
 }
@@ -888,9 +860,7 @@ fn insert_message_images(
             .decode(s.as_bytes())
             .map_err(|e| StorageError::Invalid(format!("base64 decode: {e}")))?;
         let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
-            StorageError::Invalid(
-                "unsupported image format — accepts png, jpeg, webp, gif".into(),
-            )
+            StorageError::Invalid("unsupported image format — accepts png, jpeg, webp, gif".into())
         })?;
         stmt.execute(params![message_id, idx as i64, mime, bytes])?;
     }
@@ -911,9 +881,8 @@ fn insert_message_mask(
     let bytes = B64
         .decode(b64_mask.as_bytes())
         .map_err(|e| StorageError::Invalid(format!("base64 decode (mask): {e}")))?;
-    let mime = crate::image_kind::detect(&bytes).ok_or_else(|| {
-        StorageError::Invalid("unsupported mask format — accepts png".into())
-    })?;
+    let mime = crate::image_kind::detect(&bytes)
+        .ok_or_else(|| StorageError::Invalid("unsupported mask format — accepts png".into()))?;
     conn.execute(
         "INSERT INTO message_images(message_id, idx, mime, bytes, kind)
          VALUES(?1, ?2, ?3, ?4, 'mask')",
@@ -960,11 +929,9 @@ fn bootstrap_search_index(conn: &Connection) -> Result<(), StorageError> {
     // messages_fts` proxies through to the content table and would
     // always report the source count, which silently masks an empty
     // index on the first run.
-    let fts_docs: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM messages_fts_docsize",
-        [],
-        |r| r.get(0),
-    )?;
+    let fts_docs: i64 = conn.query_row("SELECT COUNT(*) FROM messages_fts_docsize", [], |r| {
+        r.get(0)
+    })?;
     let msg_rows: i64 = conn.query_row(
         "SELECT COUNT(*) FROM messages WHERE content != ''",
         [],
@@ -975,9 +942,7 @@ fn bootstrap_search_index(conn: &Connection) -> Result<(), StorageError> {
             "INSERT INTO messages_fts(messages_fts) VALUES('rebuild')",
             [],
         )?;
-        tracing::info!(
-            "search index: rebuilt ({fts_docs} → {msg_rows} messages)"
-        );
+        tracing::info!("search index: rebuilt ({fts_docs} → {msg_rows} messages)");
     }
     Ok(())
 }
@@ -994,12 +959,7 @@ fn build_fts_query(raw: &str) -> String {
     for token in raw.split_whitespace() {
         let cleaned: String = token
             .chars()
-            .filter(|c| {
-                !matches!(
-                    *c,
-                    '"' | '\'' | '(' | ')' | '*' | ':' | '!' | '^' | '+'
-                )
-            })
+            .filter(|c| !matches!(*c, '"' | '\'' | '(' | ')' | '*' | ':' | '!' | '^' | '+'))
             .collect();
         if cleaned.is_empty() {
             continue;
@@ -1143,7 +1103,8 @@ mod tests {
         let err = s.delete_conversation("b", &c.id).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         // Bob's attempted delete must not have removed the row.
-        s.get_conversation("a", &c.id).expect("alice's convo still readable");
+        s.get_conversation("a", &c.id)
+            .expect("alice's convo still readable");
     }
 
     #[test]
@@ -1151,7 +1112,8 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "hi", &[], None).unwrap();
+        s.append_message("a", &c.id, "user", "hi", &[], None)
+            .unwrap();
         let err = s.list_messages("b", &c.id).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
     }
@@ -1161,7 +1123,9 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let err = s.append_message("b", &c.id, "user", "hi", &[], None).unwrap_err();
+        let err = s
+            .append_message("b", &c.id, "user", "hi", &[], None)
+            .unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         // No row was inserted.
         let alice_msgs = s.list_messages("a", &c.id).unwrap();
@@ -1173,9 +1137,13 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let m1 = s.append_message("a", &c.id, "user", "first", &[], None).unwrap();
-        s.append_message("a", &c.id, "assistant", "reply", &[], None).unwrap();
-        s.append_message("a", &c.id, "user", "second", &[], None).unwrap();
+        let m1 = s
+            .append_message("a", &c.id, "user", "first", &[], None)
+            .unwrap();
+        s.append_message("a", &c.id, "assistant", "reply", &[], None)
+            .unwrap();
+        s.append_message("a", &c.id, "user", "second", &[], None)
+            .unwrap();
         s.delete_messages_after("a", &c.id, m1).unwrap();
         let remaining = s.list_messages("a", &c.id).unwrap();
         assert_eq!(remaining.len(), 1);
@@ -1187,7 +1155,9 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let m1 = s.append_message("a", &c.id, "user", "first", &[], None).unwrap();
+        let m1 = s
+            .append_message("a", &c.id, "user", "first", &[], None)
+            .unwrap();
         let err = s.delete_messages_after("b", &c.id, m1).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
     }
@@ -1197,10 +1167,10 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let mid = s.append_message("a", &c.id, "user", "hi", &[], None).unwrap();
-        let err = s
-            .delete_message_and_after("b", &c.id, mid)
-            .unwrap_err();
+        let mid = s
+            .append_message("a", &c.id, "user", "hi", &[], None)
+            .unwrap();
+        let err = s.delete_message_and_after("b", &c.id, mid).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         let alice_msgs = s.list_messages("a", &c.id).unwrap();
         assert_eq!(alice_msgs.len(), 1);
@@ -1211,9 +1181,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let err = s
-            .set_conversation_model("b", &c.id, "evil")
-            .unwrap_err();
+        let err = s.set_conversation_model("b", &c.id, "evil").unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
     }
 
@@ -1222,9 +1190,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let err = s
-            .set_conversation_title("b", &c.id, "pwned")
-            .unwrap_err();
+        let err = s.set_conversation_title("b", &c.id, "pwned").unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         let again = s.get_conversation("a", &c.id).unwrap();
         assert_eq!(again.title, "t");
@@ -1237,16 +1203,14 @@ mod tests {
         let c = s.create_conversation("a", "t", None).unwrap();
         let raw = b"\x89PNG\r\n\x1a\nfake".to_vec();
         let b64 = B64.encode(&raw);
-        let mid = s.append_message("a", &c.id, "user", "img", &[b64], None).unwrap();
-        let err = s
-            .get_message_image_bytes("b", &c.id, mid, 0)
-            .unwrap_err();
+        let mid = s
+            .append_message("a", &c.id, "user", "img", &[b64], None)
+            .unwrap();
+        let err = s.get_message_image_bytes("b", &c.id, mid, 0).unwrap_err();
         assert!(matches!(err, StorageError::Forbidden));
         // Bytes still readable by the owner — assertion guards against an
         // accidental delete during the forbidden path.
-        let (bytes, mime) = s
-            .get_message_image_bytes("a", &c.id, mid, 0)
-            .unwrap();
+        let (bytes, mime) = s.get_message_image_bytes("a", &c.id, mid, 0).unwrap();
         assert_eq!(bytes, raw);
         assert_eq!(mime, "image/png");
     }
@@ -1346,10 +1310,7 @@ mod tests {
         // Re-opening the same on-disk database must not blow up on the
         // ALTER TABLE migrations — each ADD COLUMN runs once, the
         // second open observes "duplicate column" and treats it as a noop.
-        let path = std::env::temp_dir().join(format!(
-            "chat-test-{}.db",
-            Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("chat-test-{}.db", Uuid::new_v4()));
         let _first = Storage::open(&path).expect("first open");
         drop(_first);
         let second = Storage::open(&path).expect("second open");
@@ -1357,11 +1318,7 @@ mod tests {
         // Clean up the temp file + WAL/SHM siblings so subsequent test
         // runs don't accumulate stale databases.
         for suffix in ["", "-shm", "-wal"] {
-            let _ = std::fs::remove_file(format!(
-                "{}{}",
-                path.display(),
-                suffix
-            ));
+            let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
     }
 
@@ -1372,7 +1329,14 @@ mod tests {
         let c = s.create_conversation("a", "t", None).unwrap();
         let bogus = B64.encode(b"not an image at all");
         let err = s
-            .append_message("a", &c.id, "user", "img", std::slice::from_ref(&bogus), None)
+            .append_message(
+                "a",
+                &c.id,
+                "user",
+                "img",
+                std::slice::from_ref(&bogus),
+                None,
+            )
             .unwrap_err();
         assert!(matches!(err, StorageError::Invalid(_)));
     }
@@ -1389,7 +1353,10 @@ mod tests {
         s.delete_conversation("a", &c.id).unwrap();
         // Messages + images are gone via FK cascade.
         let err = s.get_message_image_bytes("a", &c.id, mid, 0).unwrap_err();
-        assert!(matches!(err, StorageError::NotFound | StorageError::Forbidden));
+        assert!(matches!(
+            err,
+            StorageError::NotFound | StorageError::Forbidden
+        ));
     }
 
     #[test]
@@ -1432,8 +1399,15 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "implementing actix-web handlers", &[], None)
-            .unwrap();
+        s.append_message(
+            "a",
+            &c.id,
+            "user",
+            "implementing actix-web handlers",
+            &[],
+            None,
+        )
+        .unwrap();
         let hits = s.search("a", "implement", 10).unwrap();
         assert_eq!(hits.len(), 1);
     }
@@ -1443,9 +1417,7 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        let pending = s
-            .append_pending_assistant("a", &c.id)
-            .unwrap();
+        let pending = s.append_pending_assistant("a", &c.id).unwrap();
         // Empty pending row content has nothing to match anyway, but
         // verify the status filter holds even when content is set.
         s.fail_message(pending, "kanidm").unwrap();
@@ -1458,7 +1430,8 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "hello world", &[], None).unwrap();
+        s.append_message("a", &c.id, "user", "hello world", &[], None)
+            .unwrap();
         assert!(s.search("a", "", 10).unwrap().is_empty());
         assert!(s.search("a", "   ", 10).unwrap().is_empty());
     }
@@ -1468,7 +1441,8 @@ mod tests {
         let s = fresh();
         seed_users(&s);
         let c = s.create_conversation("a", "t", None).unwrap();
-        s.append_message("a", &c.id, "user", "quoted reply", &[], None).unwrap();
+        s.append_message("a", &c.id, "user", "quoted reply", &[], None)
+            .unwrap();
         let hits = s.search("a", "\"quoted\"", 10).unwrap();
         assert_eq!(hits.len(), 1);
     }
