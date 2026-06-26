@@ -10,7 +10,9 @@ if echo "$STAGED" | grep -q "^frontend/"; then
   (cd "$ROOT/frontend" && yarn format)
 fi
 
-if echo "$STAGED" | grep -q "^backend/"; then
-  echo "Running backend clippy..."
-  (cd "$ROOT/backend" && cargo clippy -- -D warnings)
+# Any Rust workspace member (backend, shared, mcp) or the root manifest.
+if echo "$STAGED" | grep -qE "^(backend|shared|mcp)/|^Cargo\.(toml|lock)$"; then
+  echo "Running rustfmt + clippy on the workspace..."
+  (cd "$ROOT" && cargo fmt --all -- --check)
+  (cd "$ROOT" && cargo clippy --workspace --all-targets -- -D warnings)
 fi
