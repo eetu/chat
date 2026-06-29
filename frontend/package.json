@@ -32,7 +32,7 @@
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "swr": "^2.4.1",
+    "swr": "^2.4.2",
     "usehooks-ts": "^3.1.1"
   },
   "devDependencies": {
@@ -41,7 +41,7 @@
     "@tanstack/router-plugin": "^1.168.18",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^6.0.2",
+    "@vitejs/plugin-react": "^6.0.3",
     "@vitest/browser-playwright": "^4",
     "babel-plugin-react-compiler": "^1.0.0",
     "eslint": "^10.5.0",
