@@ -3,15 +3,17 @@ import { useRef } from "react";
 import { render } from "vitest-browser-react";
 
 import { lightTheme } from "../../themes";
-import Composer, { ComposerHandle } from "../Composer";
+import Composer, { ComposerHandle, ComposerSend } from "../Composer";
 
 const SEED_PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const SEED_DATA_URL = `data:image/png;base64,${SEED_PNG_B64}`;
 
-type SendArgs = Parameters<React.ComponentProps<typeof Composer>["onSend"]>;
-
-const Harness = ({ onSendSpy }: { onSendSpy: (...args: SendArgs) => void }) => {
+const Harness = ({
+  onSendSpy,
+}: {
+  onSendSpy: (payload: ComposerSend) => void;
+}) => {
   const ref = useRef<ComposerHandle>(null);
   return (
     <ThemeProvider theme={lightTheme}>
@@ -46,9 +48,9 @@ describe("inpaint flow", () => {
   });
 
   test("switches into inpaint, captures a mask, and sends sub_mode=inpaint", async () => {
-    const sends: SendArgs[] = [];
+    const sends: ComposerSend[] = [];
     const screen = await render(
-      <Harness onSendSpy={(...args) => sends.push(args)} />,
+      <Harness onSendSpy={(payload) => sends.push(payload)} />,
     );
 
     // Wait for the chain seed to auto-attach. Once it does, the
@@ -108,7 +110,7 @@ describe("inpaint flow", () => {
     await screen.getByLabelText("send").click();
 
     expect(sends).toHaveLength(1);
-    const [content, images, mode, , , subMode, mask] = sends[0];
+    const [{ content, images, mode, subMode, mask }] = sends;
     expect(content).toBe("replace with a fish");
     expect(images).toEqual([SEED_PNG_B64]);
     expect(mode).toBe("image");

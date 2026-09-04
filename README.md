@@ -120,6 +120,13 @@ See `backend/.env.example` for the full list. Key values:
 | `EMBEDDING_MODEL` | unset | Default Ollama embedding model for RAG ingest + retrieval; users override per-upload via the settings dropdown |
 | `RAG_TOP_K` | `4` | How many retrieved chunks to inject as system context per turn |
 | `MAX_DOCUMENT_MB` | `10` | Max raw upload size for RAG documents (text or PDF) |
+| `WEB_SEARCH_ENABLED` | `0` | Master switch for web search. Searching reaches the internet from this host's IP, so it's opt-in. |
+| `WEB_SEARCH_MAX_RESULTS` | `5` | Results injected as context per searched turn |
+| `WEB_SEARCH_FETCH_COUNT` | `3` | How many of those get their page fetched + extracted. The rest contribute a snippet. Concurrent under a fixed deadline, so this costs memory rather than wall-clock. |
+| `WEB_SEARCH_MAX_PAGE_KB` | `512` | Hard cap on one fetched page, enforced while streaming |
+| `WEB_SEARCH_QUERY_MODEL` | unset | Chat model that rewrites a turn into a standalone search query. Raw turn is used when unset. |
+| `WEB_SEARCH_ALLOW_SCRAPERS` | `0` | Allow the Google/Bing/DuckDuckGo HTML-scraping backends. Off by default — ToS + CAPTCHAs. |
+| `WEB_SEARCH_EXCLUDE_BACKENDS` | `marginalia` | Comma-separated backends to skip. One stalled backend delays every search, since results aggregate only after all of them answer. |
 | `CHAT_TTL_DAYS` | `30` | Conversations older than this are purged hourly |
 | `CHAT_DB_PATH` | `chat.db` | SQLite file (relative to backend cwd) |
 | `CHAT_RATE_PER_MIN` | `60` | Per-user token-bucket cap on `/api/chat`. `0` disables. |
@@ -138,7 +145,7 @@ See `backend/.env.example` for the full list. Key values:
 GET    /status                         { upstream, model_locked, auth,
                                          refiner_available, img2img_available,
                                          voice_in_available, voice_out_available,
-                                         rag_available }
+                                         rag_available, web_search_available }
 GET    /auth/login                     start auth (dev: writes session; oidc: redirect)
 GET    /auth/callback                  oidc callback (validates state + nonce + id_token)
 POST   /auth/logout                    clear session
@@ -240,6 +247,66 @@ without retrieved context.
 
 In-memory cosine works fine for a few hundred chunks; sqlite-vec or a
 proper ANN index is the upgrade path when the corpus grows.
+
+## Web search
+
+Nothing to deploy and no API key: search runs **in-process** via the
+[`daedra`](https://crates.io/crates/daedra) crate, which fans a query
+across unkeyed backends (mwmbl, Marginalia, Bing RSS, Google News,
+Hacker News, Wikipedia, StackExchange, GitHub, Wiby, DDG Instant) and
+falls down the chain when one is blocked, with a circuit breaker per
+backend. Set `WEB_SEARCH_ENABLED=1` and the composer grows a
+`travel_explore` toggle on chat turns.
+
+The HTML-scraping backends (Google, Bing, DuckDuckGo SERPs) are
+excluded by default — scraping those breaks their terms of service and
+earns CAPTCHAs. `WEB_SEARCH_ALLOW_SCRAPERS=1` re-enables them.
+
+**One slow backend is everyone's problem.** The chain awaits all of
+them before aggregating, so a backend that hangs is added to every
+search — `marginalia` is excluded by default for exactly that (its
+public endpoint stopped answering the URL shape the crate builds, which
+cost a measured 60 s per search). If searches get slow, that is the
+first thing to look at: run with `RUST_LOG=daedra=debug` and compare
+each backend's completion timestamp.
+
+When the toggle is on, the backend retrieves before it streams:
+
+- A message containing an `http(s)` URL fetches that page —
+  "summarise this page".
+- Anything else searches, then fetches the top `WEB_SEARCH_FETCH_COUNT`
+  hits and reduces them to article text (search backends return only
+  short snippets, which is thin ground for an answer). A page that
+  refuses us — Stack Overflow 403s bots — keeps its snippet rather than
+  dropping the source, as does one that misses the fetch deadline.
+  Nothing streams while this runs, so the phase is bounded on both
+  sides: a few pages in flight at once, and a hard cut-off that keeps
+  whatever landed. With `WEB_SEARCH_QUERY_MODEL` set, the turn is
+  first rewritten into a standalone query so follow-ups ("what about
+  the second one?") don't get searched verbatim.
+
+Results fold into the same system message and the same `context` SSE
+event as RAG, so a turn can cite documents and live pages together.
+Citations are persisted on the assistant row and survive a reload; web
+entries render as links in the sources chip.
+
+This is deterministic pre-retrieval, not function calling — the model
+never decides to search, so it works on models with no `tools`
+capability.
+
+### Fetching safely
+
+The backend shares a LAN with kanidm, vaultwarden and every other
+service, and web search makes it fetch URLs influenced by chat input.
+`backend/src/safefetch.rs` is the only thing that fetches: http(s) only,
+no credentials in the URL, default ports only; every resolved address is
+checked against the non-public ranges (RFC1918, loopback, link-local
+incl. `169.254.169.254`, CGNAT, v4-in-v6, 6to4) *before* connecting, and
+the connection is pinned to the address that passed so a second DNS
+answer can't swap in a private one; redirects are followed by hand, max
+3 hops, each re-validated; the body must be HTML or text and is streamed
+under a hard byte cap. `daedra`'s own fetcher is deliberately not used
+for this path.
 
 ## Design system
 

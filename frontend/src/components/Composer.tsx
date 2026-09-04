@@ -55,17 +55,26 @@ type Persona = {
   description: string;
 };
 
+/**
+ * Everything one send carries. An options bag rather than a positional
+ * list: the routes and `useChat.SendOptions` are already object-shaped,
+ * and most fields only apply to one branch (image sub-routing, mask,
+ * negative) so a positional signature was mostly holes.
+ */
+export type ComposerSend = {
+  content: string;
+  images?: string[];
+  mode?: Mode;
+  refine?: boolean;
+  persona?: string;
+  subMode?: SubMode;
+  mask?: string;
+  negative?: string;
+  webSearch?: boolean;
+};
+
 type Props = {
-  onSend: (
-    content: string,
-    images?: string[],
-    mode?: Mode,
-    refine?: boolean,
-    persona?: string,
-    subMode?: SubMode,
-    mask?: string,
-    negative?: string,
-  ) => void;
+  onSend: (payload: ComposerSend) => void;
   /** When true, the send button switches to a stop button. */
   streaming?: boolean;
   /** Called when the user clicks the stop button mid-stream. */
@@ -96,6 +105,9 @@ type Props = {
   /** Whether the server can transcribe audio (whisper.cpp endpoint
    * configured). Drives the mic affordance in the action row. */
   voiceInAvailable?: boolean;
+  /** Whether the server has a web search provider configured. Drives
+   * the web-search toggle, which only appears on chat turns. */
+  webSearchAvailable?: boolean;
   /** Available image-prompt personas. */
   personas?: Persona[];
   /**
@@ -118,6 +130,7 @@ type Props = {
  */
 const REFINE_KEY = "chat:refineImagePrompt";
 const PERSONA_KEY = "chat:imagePersona";
+const WEB_SEARCH_KEY = "chat:webSearch";
 const ATTACHMENT_MODE_KEY = "chat:attachmentMode";
 // Legacy key kept around for the one-shot migration: "1" → edit, "0" → off.
 const LEGACY_IMG2IMG_KEY = "chat:img2img";
@@ -228,6 +241,7 @@ const Composer = ({
   refinerAvailable = false,
   img2imgAvailable = false,
   voiceInAvailable = false,
+  webSearchAvailable = false,
   personas = [],
   suggestedSeed = null,
   ref,
@@ -354,6 +368,30 @@ const Composer = ({
   // runs at cfg=1 and ignores it, so we hide the control there to avoid
   // implying it does something. Surfaced behind a "show negative"
   // toggle so it doesn't crowd the basic image-prompt flow.
+  // Web search is a modifier on chat mode, not a mode of its own. Both
+  // the affordance and the sent flag hang off `effectiveMode`, so a
+  // persisted "on" can never leak into an image turn — the user would
+  // have no control visible to turn it back off there.
+  const [webSearch, setWebSearch] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem(WEB_SEARCH_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const showWebSearchToggle = webSearchAvailable && effectiveMode === "chat";
+  const webSearchActive = webSearch && showWebSearchToggle;
+  const toggleWebSearch = () => {
+    setWebSearch((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(WEB_SEARCH_KEY, next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
   const [negative, setNegative] = useState("");
   const [negativeOpen, setNegativeOpen] = useState(false);
   const showNegativeToggle =
@@ -696,16 +734,17 @@ const Composer = ({
       effectiveMode === "image" && negativeTrim.length > 0
         ? negativeTrim
         : undefined;
-    onSend(
-      trimmed,
-      imgs,
-      effectiveMode,
-      effectiveMode === "image" ? refine : undefined,
-      effectiveMode === "image" && refine ? persona : undefined,
+    onSend({
+      content: trimmed,
+      images: imgs,
+      mode: effectiveMode,
+      refine: effectiveMode === "image" ? refine : undefined,
+      persona: effectiveMode === "image" && refine ? persona : undefined,
       subMode,
-      maskPayload,
-      negativePayload,
-    );
+      mask: maskPayload,
+      negative: negativePayload,
+      webSearch: webSearchActive || undefined,
+    });
     setValue("");
     setAttached([]);
     setMask(null);
@@ -1331,6 +1370,34 @@ const Composer = ({
                   css={{ fontSize: 22 }}
                 >
                   {mask ? "brush" : "edit"}
+                </span>
+              </button>
+            )}
+            {showWebSearchToggle && (
+              <button
+                type="button"
+                aria-label={
+                  webSearch ? "turn off web search" : "turn on web search"
+                }
+                title={
+                  webSearch
+                    ? "web search on — answers cite live pages"
+                    : "search the web before answering"
+                }
+                aria-pressed={webSearch}
+                onClick={toggleWebSearch}
+                css={{
+                  ...composerSubButtonCss(theme),
+                  color: webSearch
+                    ? theme.colors.activity.on
+                    : theme.colors.text.muted,
+                }}
+              >
+                <span
+                  className="material-symbols-outlined"
+                  css={{ fontSize: 22 }}
+                >
+                  travel_explore
                 </span>
               </button>
             )}

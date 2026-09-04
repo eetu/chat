@@ -15,6 +15,8 @@ Rust crate `chat-backend`. Single binary, self-contained — bundles SQLite via
 | `handlers.rs` | HTTP handlers for `/api/*` |
 | `auth.rs` | `AuthUser` extractor, `/auth/login`, `/auth/callback`, `/auth/logout`, `/api/me` |
 | `oidc.rs` | `OidcContext` — provider discovery + authorize/exchange against any OIDC issuer (kanidm in production) |
+| `websearch.rs` | In-process web search (daedra) + context builder for the chat path |
+| `safefetch.rs` | The only outbound page fetcher — SSRF guard + readability extraction |
 
 ## Validation / iteration
 
@@ -66,6 +68,65 @@ Rust crate `chat-backend`. Single binary, self-contained — bundles SQLite via
   row is set to `status='error'`. Stale pending rows (>5 min) are swept
   to `error` at startup. `comfyui::free_memory` is called after every
   job (success/error/cancel) so the diffusion stack doesn't sit resident.
+- **Web search.** Deterministic pre-retrieval, not function calling —
+  nothing sends a `tools` array to Ollama. `ChatBody.web_search` is a
+  modifier on the text path only; `websearch::is_configured` gates it,
+  so the flag is ignored when `WEB_SEARCH_ENABLED` is off. A URL in the
+  user's turn routes to `websearch::fetch`, anything else to
+  `websearch::search` followed by `websearch::hydrate` (which swaps the
+  top few snippets for real article text); with `WEB_SEARCH_QUERY_MODEL`
+  set, `websearch::refine_query` rewrites the turn into a standalone
+  query first. Results join RAG's chunks in one `system` message and one
+  `context` SSE event — never emit a second `context` event or a second
+  `messages.insert(0, …)`.
+- **The search provider is `daedra`, in-process.** No key, no upstream
+  service. Use `SearchProvider::auto()` via the module's `PROVIDER`
+  `OnceLock`, never `daedra::tools::search::perform_search` — the latter
+  is the plain DuckDuckGo path, ignores `exclude_backends`, and walks
+  straight into an anti-bot page. The provider is cached because it owns
+  the per-backend circuit breakers; rebuilding it per turn would reset
+  them and re-hammer a backend that just served a CAPTCHA.
+- **A stalled backend is paid for by every search, and you cannot
+  auto-detect which one it was.** The chain awaits all of them and
+  returns a single merged list, so there is no per-backend status in the
+  return value. Attributing health from `data[].metadata.source` was
+  tried and is *wrong*: the merge truncates to `num_results`, so a
+  backend that answered well can be absent purely by ranking — measured,
+  bing-rss returned 10 results and did not appear, and a health tracker
+  built on that promptly rested one of the best backends. daedra's own
+  breaker (3 failures, 30 s) does not help either: chat searches are
+  minutes apart, so the cooldown has always expired and the dead backend
+  is re-probed every turn. The working answer is the explicit
+  `WEB_SEARCH_EXCLUDE_BACKENDS` list plus `SEARCH_BUDGET`. To find the
+  culprit, run with `RUST_LOG=daedra=debug` and compare each backend's
+  completion timestamp. Real auto-detection would mean calling each
+  backend separately and owning the merge.
+- **All fetching goes through `safefetch`.** It is the only module that
+  dereferences a URL, because those URLs come from chat input and the
+  backend sits on a LAN full of admin surfaces. It vets scheme, port and
+  credentials, rejects every non-public resolved address, pins the
+  connection to the address that passed (DNS rebinding), re-validates
+  each of at most 3 redirect hops, and streams the body under a byte
+  cap. Don't route a fetch around it, and don't reach for `daedra`'s own
+  fetcher — the guard is the point. Page-size caps matter on the Pi:
+  the container has a `MemoryMax` and a DOM costs several times its
+  page, which is what bounds `FETCH_CONCURRENCY`.
+- **Retrieval latency is the user staring at an empty bubble.** Nothing
+  streams until the chat handler's retrieval block returns, so
+  `hydrate`'s worst case *is* the perceived delay. A dead host costs the
+  full connect-plus-read budget; fetching serially made the delay the
+  sum of them (four measured at 64 s). It is bounded twice now —
+  `FETCH_CONCURRENCY` in flight, and the whole phase cut off at
+  `HYDRATE_BUDGET` via `take_until`, which keeps the pages that already
+  landed. Don't swap that for `tokio::time::timeout` around the stream:
+  that discards partial results. Keep both bounds if you touch it.
+- **Retrieved sources.** `messages.sources` is a nullable TEXT column
+  holding a JSON array of `{kind, name, url?, score?}`, written by
+  `Storage::set_message_sources` after the assistant row lands (it
+  returns the new id). `kind` is `doc` for RAG, `web` for search
+  results. `message_to_dto` parses it and drops it silently if it no
+  longer deserialises. Both retrieval kinds share the column — don't
+  add a web-only one.
 - **Vision / image attachments.** `messages.attachments` is a nullable
   TEXT column holding a JSON array of base64 strings (no `data:` prefix).
   `Storage::append_message` takes an `images: &[String]` slice; pass

@@ -62,6 +62,37 @@ pub struct Settings {
     /// (Wireguard, Tailscale, mTLS); `run_server` logs a startup
     /// warning so the open state shows up in logs.
     pub mcp_api_key: Option<String>,
+    /// Master switch for web search. Off by default: searching runs
+    /// in-process and reaches the internet from this host's own IP, so
+    /// it's a deliberate choice rather than something a deploy inherits.
+    /// When false the composer hides the affordance and the chat handler
+    /// ignores the flag even if a client sends it.
+    pub web_search_enabled: bool,
+    /// Allow the HTML-scraping backends (Google, Bing, DuckDuckGo
+    /// SERPs). Off by default — scraping those breaks their terms of
+    /// service and collects CAPTCHAs; the RSS and public-API backends
+    /// cover general queries without either problem.
+    pub web_search_allow_scrapers: bool,
+    /// Search backends to skip, by daedra's own names. Every backend is
+    /// awaited before the aggregate returns, so one that hangs is paid
+    /// for by every search — which is what the default is about; see
+    /// `websearch::DEFAULT_EXCLUDED`.
+    pub web_search_exclude_backends: Vec<String>,
+    /// How many search results to inject as context per turn.
+    pub web_search_max_results: usize,
+    /// How many of those results get their page fetched and reduced to
+    /// article text. The rest contribute their search snippet only.
+    /// Raising it costs little wall-clock — fetches run concurrently
+    /// under a fixed deadline — but does raise peak memory.
+    pub web_search_fetch_count: usize,
+    /// Hard cap on a single fetched page's body. Enforced while
+    /// streaming, so a response that omits or lies about
+    /// `content-length` can't blow the memory ceiling.
+    pub web_search_max_page_bytes: usize,
+    /// Chat model used to rewrite the user's turn into a standalone
+    /// search query, so follow-ups ("what about the second one?")
+    /// still search sensibly. When unset the raw turn is the query.
+    pub web_search_query_model: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +164,51 @@ impl Settings {
             .and_then(|v| v.parse().ok())
             .filter(|n: &usize| *n > 0)
             .unwrap_or(64);
+        let web_search_enabled = env::var("WEB_SEARCH_ENABLED")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        let web_search_allow_scrapers = env::var("WEB_SEARCH_ALLOW_SCRAPERS")
+            .map(|v| v == "1" || v == "true")
+            .unwrap_or(false);
+        // Set to an empty string to exclude nothing.
+        let web_search_exclude_backends = match env::var("WEB_SEARCH_EXCLUDE_BACKENDS") {
+            Ok(raw) => raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            Err(_) => crate::websearch::DEFAULT_EXCLUDED
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        };
+        // The ceiling protects the model's context, not the provider:
+        // each result contributes up to `RESULT_CHAR_BUDGET` characters,
+        // so 25 is already ~30k characters of system message before the
+        // conversation gets a word in.
+        let web_search_max_results = env::var("WEB_SEARCH_MAX_RESULTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|n: &usize| *n > 0)
+            .unwrap_or(8)
+            .min(25);
+        let web_search_fetch_count = env::var("WEB_SEARCH_FETCH_COUNT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3)
+            .min(web_search_max_results);
+        // 512 KB of HTML is a generous article. The DOM built from it
+        // costs several times that, and the container's MemoryMax is
+        // the real constraint, so the default stays modest.
+        let web_search_max_page_bytes = env::var("WEB_SEARCH_MAX_PAGE_KB")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|n| *n > 0)
+            .unwrap_or(512)
+            * 1024;
+        let web_search_query_model = env::var("WEB_SEARCH_QUERY_MODEL")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         let oidc = match (
             env::var("OIDC_ISSUER"),
@@ -176,6 +252,13 @@ impl Settings {
             mcp_api_key,
             image_buffer_ttl_secs,
             image_buffer_limit,
+            web_search_enabled,
+            web_search_allow_scrapers,
+            web_search_exclude_backends,
+            web_search_max_results,
+            web_search_fetch_count,
+            web_search_max_page_bytes,
+            web_search_query_model,
         }
     }
 
@@ -203,6 +286,13 @@ impl Settings {
             mcp_api_key: None,
             image_buffer_ttl_secs: 1800,
             image_buffer_limit: 64,
+            web_search_enabled: false,
+            web_search_allow_scrapers: false,
+            web_search_exclude_backends: Vec::new(),
+            web_search_max_results: 5,
+            web_search_fetch_count: 3,
+            web_search_max_page_bytes: 512 * 1024,
+            web_search_query_model: None,
         }
     }
 }

@@ -84,6 +84,11 @@ pub struct Message {
     /// `pending` for assistant rows awaiting generation, `error` for
     /// failed generations (with the error text in `content`).
     pub status: String,
+    /// Raw JSON array of retrieved sources (RAG documents and/or web
+    /// search results) consulted for this turn, or `None` when the turn
+    /// used no retrieval. Parsed at the DTO boundary so storage stays
+    /// agnostic about the entry shape.
+    pub sources: Option<String>,
 }
 
 impl Storage {
@@ -177,6 +182,15 @@ impl Storage {
         ) {
             if !e.to_string().to_lowercase().contains("duplicate column") {
                 tracing::debug!("message_images kind migration noop: {e}");
+            }
+        }
+        // Retrieved sources for an assistant turn, as a JSON array of
+        // `{kind, name, url?, score?}`. Both RAG documents and web
+        // search results land here so the UI has one shape to render
+        // and citations survive a reload.
+        if let Err(e) = conn.execute("ALTER TABLE messages ADD COLUMN sources TEXT", []) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                tracing::debug!("sources column migration noop: {e}");
             }
         }
         migrate_attachments_to_blobs(&conn)?;
@@ -311,7 +325,7 @@ impl Storage {
         // are auxiliary inputs to the inpaint pipeline and shouldn't surface
         // in the message DTO's image_count or drive thumbnail rendering.
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.role, m.content, m.created_at, m.status,
+            "SELECT m.id, m.role, m.content, m.created_at, m.status, m.sources,
                     (SELECT COUNT(*) FROM message_images mi
                      WHERE mi.message_id = m.id AND mi.kind = 'image')
                         AS image_count,
@@ -329,8 +343,9 @@ impl Storage {
                 content: row.get(2)?,
                 created_at: row.get(3)?,
                 status: row.get(4)?,
-                image_count: row.get::<_, i64>(5)? as usize,
-                has_mask: row.get::<_, i64>(6)? != 0,
+                sources: row.get(5)?,
+                image_count: row.get::<_, i64>(6)? as usize,
+                has_mask: row.get::<_, i64>(7)? != 0,
             })
         })?;
         rows.collect::<Result<_, _>>().map_err(Into::into)
@@ -425,6 +440,24 @@ impl Storage {
         if !images.is_empty() {
             insert_message_images(&conn, message_id, images)?;
         }
+        Ok(())
+    }
+
+    /// Attach the retrieved sources consulted for an assistant turn.
+    /// A separate setter rather than another `append_message` parameter:
+    /// the sources are only known after retrieval, and every existing
+    /// call site should stay untouched. A row deleted mid-flight (retry,
+    /// cancel) is a no-op, matching `complete_message`.
+    pub fn set_message_sources(
+        &self,
+        message_id: i64,
+        sources_json: &str,
+    ) -> Result<(), StorageError> {
+        let conn = self.inner.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET sources = ?1 WHERE id = ?2",
+            params![sources_json, message_id],
+        )?;
         Ok(())
     }
 
@@ -1320,6 +1353,40 @@ mod tests {
         for suffix in ["", "-shm", "-wal"] {
             let _ = std::fs::remove_file(format!("{}{}", path.display(), suffix));
         }
+    }
+
+    #[test]
+    fn message_sources_round_trip() {
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let id = s
+            .append_message("a", &c.id, "assistant", "answer", &[], None)
+            .unwrap();
+        // Untouched rows report no sources at all, which is what lets
+        // the DTO omit the field for every pre-existing message.
+        assert!(s.list_messages("a", &c.id).unwrap()[0].sources.is_none());
+
+        let payload = r#"[{"kind":"web","name":"T","url":"https://e.example"}]"#;
+        s.set_message_sources(id, payload).unwrap();
+        assert_eq!(
+            s.list_messages("a", &c.id).unwrap()[0].sources.as_deref(),
+            Some(payload)
+        );
+    }
+
+    #[test]
+    fn set_message_sources_on_a_deleted_row_is_a_noop() {
+        // The row can vanish mid-stream (retry, regenerate, cancel).
+        // Attaching citations afterwards must not error the turn.
+        let s = fresh();
+        seed_users(&s);
+        let c = s.create_conversation("a", "t", None).unwrap();
+        let id = s
+            .append_message("a", &c.id, "assistant", "answer", &[], None)
+            .unwrap();
+        s.delete_message_and_after("a", &c.id, id).unwrap();
+        assert!(s.set_message_sources(id, "[]").is_ok());
     }
 
     #[test]

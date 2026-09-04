@@ -6,11 +6,25 @@ export type Conversation = {
   updated_at: number;
 };
 
+/** A retrieved source consulted for one assistant turn. `kind` picks
+ * the icon and whether the pill is a link: `doc` entries come from the
+ * user's uploaded documents and carry a cosine score, `web` entries come
+ * from a live search and carry a URL. */
+export type Source = {
+  kind: "doc" | "web";
+  name: string;
+  url?: string;
+  score?: number | null;
+};
+
 export type Message = {
   id: number;
   role: "user" | "assistant" | "system";
   content: string;
   created_at: number;
+  /** Sources retrieved for this turn. Persisted server-side, so they
+   * survive a reload. */
+  sources?: Source[];
   /** Count of image attachments. Bytes are fetched on demand via
    * `imageUrl(convId, id, idx)` rather than inlined in the list payload. */
   image_count?: number;
@@ -47,6 +61,7 @@ export type Status = {
   voice_in_available: boolean;
   voice_out_available: boolean;
   rag_available: boolean;
+  web_search_available: boolean;
 };
 
 export type Document = {
@@ -197,10 +212,10 @@ export type ChatStreamEvent =
       prompt_tokens: number;
       tokens_per_sec: number;
     }
-  /** Text-mode only: RAG retrieved the listed documents and injected
-   * them as system context. Fired once per turn before the first
-   * delta. */
-  | { type: "context"; sources: Array<{ name: string; score: number }> };
+  /** Text-mode only: retrieval consulted the listed sources — uploaded
+   * documents, live web results, or both — and injected them as system
+   * context. Fired once per turn before the first delta. */
+  | { type: "context"; sources: Source[] };
 
 /**
  * POST /api/chat and parse the SSE response stream produced by actix-web-lab.
@@ -235,6 +250,10 @@ export async function* streamChat(
     /** Negative-prompt override for image mode. Effective on workflows
      * that run real CFG (Flux Fill inpaint today). */
     negative?: string;
+    /** Run a live web search before answering and inject the results as
+     * context. A modifier on chat mode — ignored for image turns and on
+     * deploys with no search provider configured. */
+    web_search?: boolean;
   },
   signal?: AbortSignal,
 ): AsyncGenerator<ChatStreamEvent> {
@@ -326,9 +345,7 @@ function parseFrame(frame: string): ChatStreamEvent | null {
   }
   if (event === "context") {
     try {
-      const parsed = JSON.parse(data) as {
-        sources: Array<{ name: string; score: number }>;
-      };
+      const parsed = JSON.parse(data) as { sources: Source[] };
       return { type: "context", sources: parsed.sources ?? [] };
     } catch {
       return null;

@@ -9,8 +9,10 @@ pub mod ollama;
 pub mod personas;
 pub mod rag;
 pub mod ratelimit;
+pub mod safefetch;
 pub mod settings;
 pub mod storage;
+pub mod websearch;
 
 use std::sync::Arc;
 

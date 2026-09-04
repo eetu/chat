@@ -12,7 +12,7 @@ import {
   Persona,
   Status,
 } from "../api";
-import Composer, { ComposerHandle } from "../components/Composer";
+import Composer, { ComposerHandle, ComposerSend } from "../components/Composer";
 import MaskEditor from "../components/MaskEditor";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
@@ -167,31 +167,12 @@ const ChatView = () => {
     api.personas,
   );
 
-  const sendWithModel = (
-    content: string,
-    images?: string[],
-    mode?: "chat" | "image",
-    refine?: boolean,
-    persona?: string,
-    subMode?: "txt2img" | "img2img" | "inpaint",
-    mask?: string,
-    negative?: string,
-  ) => {
+  const sendWithModel = (payload: ComposerSend) => {
     // The user just hit send — they expect to see their message and the
     // incoming reply. Re-glue to the bottom regardless of where they were.
     stickRef.current = true;
     setShowJump(false);
-    void send({
-      content,
-      model: model ?? undefined,
-      images,
-      mode,
-      refine,
-      persona,
-      subMode,
-      mask,
-      negative,
-    });
+    void send({ ...payload, model: model ?? undefined });
   };
 
   /**
@@ -488,6 +469,7 @@ const ChatView = () => {
       subMode?: "txt2img" | "img2img" | "inpaint";
       mask?: string;
       negative?: string;
+      webSearch?: boolean;
     };
     const parsed = ((): Pending | null => {
       try {
@@ -515,6 +497,7 @@ const ChatView = () => {
       subMode: parsed.subMode,
       mask: parsed.mask,
       negative: parsed.negative,
+      webSearch: parsed.webSearch,
     });
   }, [id, loaded, send]);
 
@@ -666,6 +649,7 @@ const ChatView = () => {
           refinerAvailable={status?.refiner_available ?? false}
           img2imgAvailable={status?.img2img_available ?? false}
           voiceInAvailable={status?.voice_in_available ?? false}
+          webSearchAvailable={status?.web_search_available ?? false}
           personas={personas}
           suggestedSeed={suggestedSeed}
         />
