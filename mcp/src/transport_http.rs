@@ -83,11 +83,7 @@ struct AuthState {
 /// Reject anything that doesn't carry the right Bearer token. Constant
 /// time compare so the key length can't be probed by timing. Returns
 /// 401 with `WWW-Authenticate` so the client knows what scheme to use.
-async fn require_bearer(
-    State(state): State<AuthState>,
-    req: Request,
-    next: Next,
-) -> Result<Response, Response> {
+async fn require_bearer(State(state): State<AuthState>, req: Request, next: Next) -> Response {
     let presented = req
         .headers()
         .get(axum::http::header::AUTHORIZATION)
@@ -99,7 +95,7 @@ async fn require_bearer(
         None => false,
     };
     if ok {
-        Ok(next.run(req).await)
+        next.run(req).await
     } else {
         let mut resp = Response::new(axum::body::Body::from(
             r#"{"error":"missing or invalid bearer token"}"#,
@@ -113,7 +109,7 @@ async fn require_bearer(
             axum::http::header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
         );
-        Err(resp)
+        resp
     }
 }
 
