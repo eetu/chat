@@ -2,7 +2,7 @@ import { Theme, useTheme } from "@emotion/react";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, imageUrl, maskUrl, Message } from "../api";
+import { api, imageUrl, maskUrl, Message, Source } from "../api";
 import {
   markdownToSpeech,
   normalizeVoices,
@@ -12,7 +12,7 @@ import {
 import Markdown from "./Markdown";
 import TypingIndicator from "./TypingIndicator";
 
-type DisplayMessage = Pick<Message, "role" | "content"> & {
+type DisplayMessage = Pick<Message, "role" | "content" | "sources"> & {
   id?: number;
   /** Optimistic-state base64 for messages not yet persisted. */
   images?: string[];
@@ -37,10 +37,6 @@ type DisplayMessage = Pick<Message, "role" | "content"> & {
    * server-side; only present on the most recent assistant turn this
    * session. */
   stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
-  /** Docs that fed RAG retrieval this turn. Surfaced as a chip under
-   * the bubble so the user can confirm which manuals / notes the
-   * assistant consulted. */
-  sources?: Array<{ name: string; score: number }>;
 };
 
 type Props = {
@@ -1156,46 +1152,74 @@ const SourcesChip = ({
   sources,
   theme,
 }: {
-  sources: Array<{ name: string; score: number }>;
+  sources: Source[];
   theme: Theme;
-}) => (
-  <div
-    css={{
-      display: "flex",
-      flexWrap: "wrap",
-      alignItems: "center",
-      gap: 4,
-      ...theme.typography.caption,
-      color: theme.colors.text.muted,
-    }}
-  >
-    <span
-      className="material-symbols-outlined"
-      aria-hidden
-      css={{ fontSize: 14 }}
+}) => {
+  const pillCss = {
+    padding: "1px 6px",
+    borderRadius: 4,
+    background: theme.colors.background.light,
+    border: `1px solid ${theme.colors.border}`,
+    color: theme.colors.text.muted,
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+    fontSize: 11,
+  } as const;
+  // A mixed turn (uploaded documents plus live results) gets the web
+  // glyph — it's the more surprising half of the provenance.
+  const anyWeb = sources.some((s) => s.kind === "web");
+  return (
+    <div
+      css={{
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        gap: 4,
+        ...theme.typography.caption,
+        color: theme.colors.text.muted,
+      }}
     >
-      menu_book
-    </span>
-    <span>from</span>
-    {sources.map((s) => (
       <span
-        key={s.name}
-        title={`relevance ${(s.score * 100).toFixed(0)}%`}
-        css={{
-          padding: "1px 6px",
-          borderRadius: 4,
-          background: theme.colors.background.light,
-          border: `1px solid ${theme.colors.border}`,
-          color: theme.colors.text.muted,
-          fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
-          fontSize: 11,
-        }}
+        className="material-symbols-outlined"
+        aria-hidden
+        css={{ fontSize: 14 }}
       >
-        {s.name}
+        {anyWeb ? "travel_explore" : "menu_book"}
       </span>
-    ))}
-  </div>
-);
+      <span>from</span>
+      {sources.map((s) =>
+        s.url ? (
+          <a
+            key={s.url}
+            href={s.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={s.url}
+            css={{
+              ...pillCss,
+              color: theme.colors.activity.on,
+              textDecoration: "none",
+              "&:hover": { textDecoration: "underline" },
+            }}
+          >
+            {s.name}
+          </a>
+        ) : (
+          <span
+            key={s.name}
+            title={
+              typeof s.score === "number"
+                ? `relevance ${(s.score * 100).toFixed(0)}%`
+                : undefined
+            }
+            css={pillCss}
+          >
+            {s.name}
+          </span>
+        ),
+      )}
+    </div>
+  );
+};
 
 const StatsCaption = ({
   stats,

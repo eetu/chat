@@ -30,6 +30,19 @@ Per-area instructions live in `backend/CLAUDE.md` and `frontend/CLAUDE.md`.
   - `delta` — body is the raw text chunk (NOT JSON). Concatenate to render.
   - `done` — JSON `{ conv_id }`. Use to hide the loading indicator.
   - `error` — JSON `{ message }`.
+- **Retrieval.** Two sources feed the model: RAG over the user's
+  uploaded documents (always on when embeddings are configured) and web
+  search (opt-in per turn via the composer toggle). Both inject one
+  `system` message and report through one `context` SSE event, and both
+  persist their citations on `messages.sources`. Web search is
+  deterministic pre-retrieval — it does **not** use Ollama tool calling,
+  which is still out of scope below.
+- **Web search has no upstream service.** It runs in-process via the
+  `daedra` crate across unkeyed backends — no API key, nothing to
+  deploy, and no query leaving for a third-party search vendor beyond
+  the engines daedra queries. Fetching pages is done only by
+  `backend/src/safefetch.rs`, which refuses any non-public address; see
+  `backend/CLAUDE.md` before touching either.
 - **Design system.** Tokens are copied verbatim from halo's `themes.ts`. Don't
   fork them — when halo evolves, copy the file across so the two apps stay
   visually aligned. The only intentional divergence is `Wordmark.tsx`.
@@ -45,7 +58,10 @@ Per-area instructions live in `backend/CLAUDE.md` and `frontend/CLAUDE.md`.
 
 ## Out of scope (for now)
 
-- Tool use / function calling on Ollama side
+- Tool use / function calling on Ollama side. The `tools` capability is
+  read from `/api/show` and reported by `/api/models/caps`, but nothing
+  sends a `tools` array or parses `tool_calls`. Web retrieval exists
+  without it — see "Retrieval" above.
 - Multi-modal (images/audio)
 - Shared/team conversations — strictly per-user
 - Admin UI

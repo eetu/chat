@@ -3,7 +3,7 @@ import { useRef } from "react";
 import { render } from "vitest-browser-react";
 
 import { lightTheme } from "../../themes";
-import Composer, { ComposerHandle } from "../Composer";
+import Composer, { ComposerHandle, ComposerSend } from "../Composer";
 
 // 1×1 transparent PNG — small enough to inline and recognisable when it
 // flows back through `onSend`'s `images` array.
@@ -11,13 +11,11 @@ const SEED_PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const SEED_DATA_URL = `data:image/png;base64,${SEED_PNG_B64}`;
 
-type SendArgs = Parameters<React.ComponentProps<typeof Composer>["onSend"]>;
-
 const Harness = ({
   onSendSpy,
   seedId = "seed-1",
 }: {
-  onSendSpy: (...args: SendArgs) => void;
+  onSendSpy: (payload: ComposerSend) => void;
   seedId?: string;
 }) => {
   // Don't actually need the handle for the test, but typing it tracks
@@ -54,11 +52,11 @@ describe("img2img chain seed", () => {
   });
 
   test("auto-attaches the suggested seed and sends it as an image", async () => {
-    const sends: SendArgs[] = [];
+    const sends: ComposerSend[] = [];
     const screen = await render(
       <Harness
-        onSendSpy={(...args) => {
-          sends.push(args);
+        onSendSpy={(payload) => {
+          sends.push(payload);
         }}
       />,
     );
@@ -76,7 +74,7 @@ describe("img2img chain seed", () => {
 
     // One submission, mode=image, the seed base64 carried as the only image.
     expect(sends).toHaveLength(1);
-    const [content, images, mode] = sends[0];
+    const [{ content, images, mode }] = sends;
     expect(content).toBe("paint it blue");
     expect(mode).toBe("image");
     expect(images).toEqual([SEED_PNG_B64]);
@@ -90,11 +88,11 @@ describe("img2img chain seed", () => {
     // checking the absence of a mask payload + the sub_mode falling
     // through to undefined (so the backend infers img2img).
     window.localStorage.setItem("chat:attachmentMode", "inpaint");
-    const sends: SendArgs[] = [];
+    const sends: ComposerSend[] = [];
     const screen = await render(
       <Harness
-        onSendSpy={(...args) => {
-          sends.push(args);
+        onSendSpy={(payload) => {
+          sends.push(payload);
         }}
       />,
     );
@@ -106,7 +104,7 @@ describe("img2img chain seed", () => {
     await screen.getByLabelText("send").click();
 
     expect(sends).toHaveLength(1);
-    const [, , mode, , , subMode, mask] = sends[0];
+    const [{ mode, subMode, mask }] = sends;
     expect(mode).toBe("image");
     // Chain forces "edit" regardless of stored attachmentMode —
     // sub_mode is "img2img" (or undefined; backend defaults to it).

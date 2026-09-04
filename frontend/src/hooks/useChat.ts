@@ -90,9 +90,12 @@ export type SendOptions = {
   mask?: string;
   /** Optional negative-prompt override. */
   negative?: string;
+  /** Search the web before answering and answer from the results. Chat
+   * mode only. */
+  webSearch?: boolean;
 };
 
-type LiveMessage = Pick<Message, "role" | "content"> & {
+type LiveMessage = Pick<Message, "role" | "content" | "sources"> & {
   id?: number;
   /** Optimistic-state base64 (no `data:` prefix) — only present before
    * the server round-trip; afterwards `image_count` carries the metadata
@@ -118,9 +121,6 @@ type LiveMessage = Pick<Message, "role" | "content"> & {
    * persisted server-side — present only on the live stream of this
    * conversation. */
   stats?: { tokens: number; prompt_tokens: number; tokens_per_sec: number };
-  /** Documents that fed into this turn via RAG retrieval. Surfaced as
-   * a small "sources" chip under the assistant bubble. Not persisted. */
-  sources?: Array<{ name: string; score: number }>;
 };
 
 export function useChat(convId: string | undefined) {
@@ -184,6 +184,7 @@ export function useChat(convId: string | undefined) {
         subMode,
         mask,
         negative,
+        webSearch,
       } = opts;
       const controller = new AbortController();
       abortRef.current = controller;
@@ -244,6 +245,7 @@ export function useChat(convId: string | undefined) {
             sub_mode: subMode,
             mask,
             negative,
+            web_search: webSearch,
           },
           controller.signal,
         )) {
@@ -252,8 +254,11 @@ export function useChat(convId: string | undefined) {
               const next = prev.slice();
               const last = next[next.length - 1];
               if (last && last.role === "assistant") {
+                // Spread, don't rebuild: `context` lands before the
+                // first delta, so a fresh object here would drop the
+                // sources chip the moment the answer starts streaming.
                 next[next.length - 1] = {
-                  role: "assistant",
+                  ...last,
                   content: last.content + evt.content,
                 };
               }

@@ -12,6 +12,7 @@ use crate::comfyui;
 use crate::ollama::{self, ChatMessage};
 use crate::personas;
 use crate::storage::StorageError;
+use crate::websearch;
 use crate::AppState;
 
 #[derive(Debug, Serialize)]
@@ -40,6 +41,11 @@ pub struct StatusResponse {
     /// True when EMBEDDING_MODEL is set so the UI can offer document
     /// uploads and surface a RAG indicator.
     pub rag_available: bool,
+    /// True when WEB_SEARCH_API_KEY is set so the composer can show the
+    /// web-search toggle. Unlike `rag_available` this isn't probed —
+    /// the provider is a paid third party, so a health check on every
+    /// `/status` poll would burn quota.
+    pub web_search_available: bool,
 }
 
 pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
@@ -100,6 +106,7 @@ pub async fn status(state: web::Data<Arc<AppState>>) -> HttpResponse {
         voice_in_available: state.settings.whisper_url.is_some(),
         voice_out_available: state.settings.piper_url.is_some(),
         rag_available,
+        web_search_available: websearch::is_configured(&state),
     })
 }
 
@@ -267,6 +274,11 @@ struct MessageDto {
     #[serde(skip_serializing_if = "is_false")]
     has_mask: bool,
     status: String,
+    /// Retrieved sources consulted for this turn — RAG documents, web
+    /// search results, or both. Omitted when the turn used no
+    /// retrieval.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sources: Option<serde_json::Value>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -286,6 +298,13 @@ fn message_to_dto(m: crate::storage::Message) -> MessageDto {
         image_count: m.image_count,
         has_mask: m.has_mask,
         status: m.status,
+        // Stored as raw JSON text. A row written by an older build (or
+        // hand-edited) that no longer parses is dropped rather than
+        // failing the whole thread fetch.
+        sources: m
+            .sources
+            .as_deref()
+            .and_then(|s| serde_json::from_str(s).ok()),
     }
 }
 
@@ -456,6 +475,12 @@ pub struct ChatBody {
     /// at cfg=1 ignores the negative branch entirely.
     #[serde(default)]
     pub negative: Option<String>,
+    /// Run a live web search before answering and inject the results as
+    /// retrieved context. A modifier on chat mode, not a mode of its
+    /// own — ignored for `mode == "image"`, and ignored entirely when no
+    /// `WEB_SEARCH_API_KEY` is configured.
+    #[serde(default)]
+    pub web_search: Option<bool>,
 }
 
 pub async fn list_personas() -> HttpResponse {
@@ -1371,15 +1396,28 @@ pub async fn chat(
     }
 
     let rag_user_text = body.content.clone();
+    // Web search only reaches here on the text path (the image branch
+    // returned above). A client flag against a deploy with no provider
+    // configured is ignored rather than failing the turn.
+    let web_search_enabled = body.web_search.unwrap_or(false) && websearch::is_configured(&state);
+    let web_query_model = state.settings.web_search_query_model.clone();
+    let web_max_results = state.settings.web_search_max_results;
+    let web_fetch_count = state.settings.web_search_fetch_count;
     tokio::spawn(async move {
         let tx_for_delta = tx.clone();
-        // RAG injection: if the user owns any documents, embed the new
-        // user turn with each distinct embedding model used at upload
-        // time (cross-model vectors aren't comparable), rank chunks by
-        // cosine, then merge into a single top-k system message.
-        // Failures stay non-fatal — the assistant just sees the prompt
-        // without retrieved context.
+        // Retrieval. Two independent sources — the user's uploaded
+        // documents and, when the turn asked for it, a live web search
+        // — collected into one system message and one `context` event
+        // so the client has a single shape to render and persist.
+        // Failures at any step stay non-fatal: the assistant just sees
+        // the prompt without retrieved context.
         let mut messages = messages;
+        let mut context_blocks: Vec<String> = Vec::new();
+        let mut sources: Vec<serde_json::Value> = Vec::new();
+
+        // RAG: embed the new user turn with each distinct embedding
+        // model used at upload time (cross-model vectors aren't
+        // comparable), rank chunks by cosine, keep the top k.
         let stored = state_clone.storage.load_user_chunks(&user_sub).ok();
         if let Some(chunks) = stored.filter(|c| !c.is_empty()) {
             use std::collections::HashMap;
@@ -1427,9 +1465,9 @@ pub async fn chat(
                 // Surface which documents were consulted so the UI can
                 // show a sources chip under the assistant turn. Dedup
                 // by name + report the best matching score per doc.
-                let mut sources: Vec<(String, f32)> = Vec::new();
+                let mut doc_sources: Vec<(String, f32)> = Vec::new();
                 for (score, ch) in &top {
-                    if let Some(entry) = sources
+                    if let Some(entry) = doc_sources
                         .iter_mut()
                         .find(|(name, _)| name == &ch.document_name)
                     {
@@ -1437,33 +1475,106 @@ pub async fn chat(
                             entry.1 = *score;
                         }
                     } else {
-                        sources.push((ch.document_name.clone(), *score));
+                        doc_sources.push((ch.document_name.clone(), *score));
                     }
                 }
-                let sources_json: Vec<serde_json::Value> = sources
-                    .iter()
-                    .map(|(name, score)| {
-                        serde_json::json!({
-                            "name": name,
-                            "score": score,
-                        })
+                sources.extend(doc_sources.iter().map(|(name, score)| {
+                    serde_json::json!({
+                        "kind": "doc",
+                        "name": name,
+                        "score": score,
                     })
-                    .collect();
-                let _ = tx
-                    .send(Ok(ollama::sse_json(
-                        "context",
-                        &serde_json::json!({ "sources": sources_json }),
-                    )))
-                    .await;
-                messages.insert(
-                    0,
-                    ChatMessage {
-                        role: "system".into(),
-                        content: prompt,
-                        images: None,
-                    },
-                );
+                }));
+                context_blocks.push(prompt);
             }
+        }
+
+        if web_search_enabled {
+            // A URL in the message means "read this page"; anything
+            // else is a search whose top hits then get fetched. Both
+            // paths go through `safefetch`, which vets the address
+            // before connecting — see that module for why.
+            let target_url = websearch::extract_url(&rag_user_text);
+            let outcome = match &target_url {
+                Some(url) => websearch::fetch(&state_clone, url).await.map(|r| vec![r]),
+                None => {
+                    // Resolve references against the conversation so a
+                    // follow-up ("what about the second one?") isn't
+                    // searched verbatim. Falls back to the raw turn
+                    // when no rewrite model is set or it returns junk.
+                    let query = match &web_query_model {
+                        Some(m) => {
+                            match websearch::refine_query(
+                                state_clone.clone(),
+                                m,
+                                &messages,
+                                &rag_user_text,
+                            )
+                            .await
+                            {
+                                Ok(q) if !q.is_empty() => q,
+                                Ok(_) => rag_user_text.clone(),
+                                Err(e) => {
+                                    tracing::warn!("web search: query rewrite failed: {e}");
+                                    rag_user_text.clone()
+                                }
+                            }
+                        }
+                        None => rag_user_text.clone(),
+                    };
+                    websearch::search(&state_clone, &query, web_max_results).await
+                }
+            };
+            match outcome {
+                Ok(mut results) => {
+                    // Search backends return snippets. Pull the real
+                    // article text for the top few so the answer has
+                    // something to stand on; a failed fetch silently
+                    // leaves that result's snippet in place.
+                    if target_url.is_none() {
+                        websearch::hydrate(&state_clone, &mut results, web_fetch_count).await;
+                    }
+                    tracing::debug!(
+                        count = results.len(),
+                        pages = results.iter().filter(|r| r.fetched).count(),
+                        "web search: injected results"
+                    );
+                    sources.extend(results.iter().map(|r| {
+                        serde_json::json!({
+                            "kind": "web",
+                            "name": r.title,
+                            "url": r.url,
+                        })
+                    }));
+                    context_blocks.push(websearch::build_context(&results));
+                }
+                Err(e) => tracing::warn!("web search failed: {e}"),
+            }
+        }
+
+        // One event, one system message, whatever the mix of sources.
+        let sources_payload = if sources.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Array(sources))
+        };
+        if let Some(payload) = &sources_payload {
+            let _ = tx
+                .send(Ok(ollama::sse_json(
+                    "context",
+                    &serde_json::json!({ "sources": payload }),
+                )))
+                .await;
+        }
+        if !context_blocks.is_empty() {
+            messages.insert(
+                0,
+                ChatMessage {
+                    role: "system".into(),
+                    content: context_blocks.join("\n"),
+                    images: None,
+                },
+            );
         }
         // Race the upstream stream against `tx.closed()` so a client that
         // disconnects (stop button, navigation, tab close) tears down the
@@ -1484,7 +1595,7 @@ pub async fn chat(
         match result {
             Ok(outcome) => {
                 if !outcome.content.is_empty() {
-                    if let Err(e) = state_clone.storage.append_message(
+                    match state_clone.storage.append_message(
                         &user_sub,
                         &conv_id,
                         "assistant",
@@ -1492,7 +1603,21 @@ pub async fn chat(
                         &[],
                         None,
                     ) {
-                        tracing::error!("failed to persist assistant message: {e}");
+                        // Citations are attached to the persisted row so
+                        // a reloaded conversation keeps its sources —
+                        // the SSE `context` event alone would only live
+                        // as long as the tab.
+                        Ok(id) => {
+                            if let Some(payload) = &sources_payload {
+                                if let Err(e) = state_clone
+                                    .storage
+                                    .set_message_sources(id, &payload.to_string())
+                                {
+                                    tracing::warn!("failed to persist message sources: {e}");
+                                }
+                            }
+                        }
+                        Err(e) => tracing::error!("failed to persist assistant message: {e}"),
                     }
                 }
                 if outcome.completed {

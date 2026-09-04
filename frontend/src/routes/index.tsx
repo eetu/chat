@@ -5,7 +5,7 @@ import { useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 
 import { api, ModelCapabilities, Persona, Status } from "../api";
-import Composer from "../components/Composer";
+import Composer, { ComposerSend } from "../components/Composer";
 import Wordmark from "../components/Wordmark";
 import { mq } from "../mq";
 
@@ -59,18 +59,27 @@ const Landing = () => {
     }
   };
 
-  const onSend = async (
-    content: string,
-    images?: string[],
-    mode?: "chat" | "image",
-    refine?: boolean,
-    persona?: string,
-  ) => {
+  const onSend = async ({
+    content,
+    images,
+    mode,
+    refine,
+    persona,
+    webSearch,
+  }: ComposerSend) => {
     const conv = await api.createConversation({ model: model ?? undefined });
     try {
       window.sessionStorage.setItem(
         `chat:pending:${conv.id}`,
-        JSON.stringify({ content, images, model, mode, refine, persona }),
+        JSON.stringify({
+          content,
+          images,
+          model,
+          mode,
+          refine,
+          persona,
+          webSearch,
+        }),
       );
     } catch {
       // ignore
@@ -112,6 +121,7 @@ const Landing = () => {
           refinerAvailable={status?.refiner_available ?? false}
           img2imgAvailable={status?.img2img_available ?? false}
           voiceInAvailable={status?.voice_in_available ?? false}
+          webSearchAvailable={status?.web_search_available ?? false}
           personas={personas}
         />
       </div>
