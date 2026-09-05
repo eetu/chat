@@ -93,8 +93,7 @@ export const normalizeVoices = (data: unknown): VoiceInfo[] => {
     const language =
       info && typeof info === "object"
         ? ((info as { language?: unknown }).language as
-            | Record<string, unknown>
-            | undefined)
+            Record<string, unknown> | undefined)
         : undefined;
     const family = typeof language?.family === "string" ? language.family : "";
     const code = typeof language?.code === "string" ? language.code : "";
