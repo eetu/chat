@@ -2267,8 +2267,8 @@ __metadata:
     babel-plugin-react-compiler: "npm:^1.0.0"
     classnames: "npm:^2.5.1"
     eslint: "npm:^10.8.1"
-    highlight.js: "npm:^11.11.2"
-    katex: "npm:^0.18.3"
+    highlight.js: "npm:^11.12.0"
+    katex: "npm:^0.18.5"
     mermaid: "npm:^11.16.1"
     playwright: "npm:^1"
     prettier: "npm:^3.9.6"
@@ -2324,6 +2324,13 @@ __metadata:
   version: 7.2.0
   resolution: "commander@npm:7.2.0"
   checksum: 10/9973af10727ad4b44f26703bf3e9fdc323528660a7590efe3aa9ad5042b4584c0deed84ba443f61c9d6f02dade54a5a5d3c95e306a1e1630f8374ae6db16c06d
+  languageName: node
+  linkType: hard
+
+"commander@npm:^15.0.0":
+  version: 15.0.0
+  resolution: "commander@npm:15.0.0"
+  checksum: 10/a5dab1f5c3f1bf2ea19e8089f650f7fb65c3ed88e13ddde62e490d34b20057bcb2cd3de5b6ddc8aae93286083f8256ca0b812df842f574cbebe0e40f5b2f98f7
   languageName: node
   linkType: hard
 
@@ -3640,10 +3647,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"highlight.js@npm:^11.11.2":
-  version: 11.11.2
-  resolution: "highlight.js@npm:11.11.2"
-  checksum: 10/613b12a6a47994e3144ba54eea7d24438a9056bdb996ad81b6c7436bf1a6a4435db007c86f6786673823578e6fb8ad054da4783f269784165da81f902332e047
+"highlight.js@npm:^11.12.0":
+  version: 11.12.0
+  resolution: "highlight.js@npm:11.12.0"
+  checksum: 10/1aecfae8aaf230bc38daa81b91fdd3b3e2765b5d18fd1d83dbc85513552336028e71f0e827417ebec2b88ac2e6c903ac6ccfca0772a471768d9236a99f3f540d
   languageName: node
   linkType: hard
 
@@ -3913,14 +3920,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"katex@npm:^0.18.3":
-  version: 0.18.3
-  resolution: "katex@npm:0.18.3"
+"katex@npm:^0.18.5":
+  version: 0.18.5
+  resolution: "katex@npm:0.18.5"
   dependencies:
-    commander: "npm:^8.3.0"
+    commander: "npm:^15.0.0"
   bin:
     katex: cli.js
-  checksum: 10/00a88facd0cedee5b9991ac33d3f99050bbbb981f34404fc659bfcc906aea17a230e8ba870b809ea18336e200065242743368aab77ddf482537c09200e9bca0d
+  checksum: 10/0e31ea2ad8263cad69a0948aa80e376c72c91aaa3d6d942af2a759f07f955a2df7863f4bcf0bd4ec473c9387229adb1754be135479cd8a9c1853d1ba5714c6f5
   languageName: node
   linkType: hard
 
