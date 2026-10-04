@@ -41,9 +41,7 @@ export const resolveSttLang = (): SttLang | null => {
   const pref = readSttLangPref();
   if (pref !== "auto") return pref;
   const locale =
-    typeof navigator !== "undefined" && navigator.language
-      ? navigator.language.toLowerCase()
-      : "";
+    typeof navigator !== "undefined" && navigator.language ? navigator.language.toLowerCase() : "";
   for (const code of SUPPORTED_STT_LANGS) {
     if (locale.startsWith(code)) return code;
   }
@@ -92,19 +90,14 @@ export const normalizeVoices = (data: unknown): VoiceInfo[] => {
   return Object.entries(data as Record<string, unknown>).map(([slug, info]) => {
     const language =
       info && typeof info === "object"
-        ? ((info as { language?: unknown }).language as
-            Record<string, unknown> | undefined)
+        ? ((info as { language?: unknown }).language as Record<string, unknown> | undefined)
         : undefined;
     const family = typeof language?.family === "string" ? language.family : "";
     const code = typeof language?.code === "string" ? language.code : "";
     const nameEnglish =
-      typeof language?.name_english === "string"
-        ? (language.name_english as string)
-        : slug;
+      typeof language?.name_english === "string" ? (language.name_english as string) : slug;
     const nameNative =
-      typeof language?.name_native === "string"
-        ? (language.name_native as string)
-        : nameEnglish;
+      typeof language?.name_native === "string" ? (language.name_native as string) : nameEnglish;
     return {
       slug,
       family: family || slug.split("_")[0] || "",
@@ -135,11 +128,7 @@ export const detectLang = (text: string): "en" | "fi" | null => {
   const fiHints =
     /\b(että|olen|on|kun|niin|tämä|ovat|hän|mutta|ja|sinä|minä|joka|kuin|mitä|kiitos|hei)\b|ää|öö/;
   if (fiHints.test(lower)) return "fi";
-  if (
-    /\b(the|and|with|that|this|have|been|from|your|will|about|which)\b/.test(
-      lower,
-    )
-  ) {
+  if (/\b(the|and|with|that|this|have|been|from|your|will|about|which)\b/.test(lower)) {
     return "en";
   }
   return null;
@@ -156,15 +145,10 @@ export const pickVoice = (
   override: string | null,
 ): string | undefined => {
   if (voices.length === 0) return undefined;
-  if (
-    override &&
-    override !== "auto" &&
-    voices.some((v) => v.slug === override)
-  ) {
+  if (override && override !== "auto" && voices.some((v) => v.slug === override)) {
     return override;
   }
-  const lang =
-    detectLang(priorUserText ?? "") ?? detectLang(assistantText) ?? "en";
+  const lang = detectLang(priorUserText ?? "") ?? detectLang(assistantText) ?? "en";
   return voices.find((v) => v.family === lang)?.slug ?? voices[0]?.slug;
 };
 

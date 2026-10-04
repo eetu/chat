@@ -5,7 +5,7 @@ Vite + React 19 + Emotion + TanStack Router (file-based) + SWR.
 ## Validation
 
 ```sh
-yarn validate    # lint + format + typecheck in one shot
+yarn validate    # typecheck + lint in one shot
 yarn dev         # vite dev server on :5173, proxies api/auth/status to :8080
 yarn build       # tsc + vite build → dist/
 ```
@@ -13,8 +13,7 @@ yarn build       # tsc + vite build → dist/
 Use **yarn** (not npm). Repo uses Yarn 4 via `packageManager`.
 
 Individual:
-- `yarn lint` / `yarn lint:fix`
-- `yarn format` / `yarn format:fix`
+- `yarn lint` / `yarn lint:fix` — Biome (`@anarkisti/biome-config/react`): formatting, lint and import order in one pass
 - `yarn typecheck`
 
 ## Layout

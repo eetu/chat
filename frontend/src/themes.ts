@@ -1,4 +1,4 @@
-import { Theme } from "@emotion/react";
+import type { Theme } from "@emotion/react";
 
 type Typography = {
   fontSize: string;
@@ -97,8 +97,7 @@ export const lightTheme: Theme = {
     border: "lightgray",
     activity: {
       on: "#f78f08",
-      onBackground:
-        "linear-gradient(153deg, rgba(255,237,207,1) 0%, rgba(255,239,171,1) 56%)",
+      onBackground: "linear-gradient(153deg, rgba(255,237,207,1) 0%, rgba(255,239,171,1) 56%)",
       onSoft: "rgba(247, 143, 8, 0.10)",
       offBackground: "#d9d9d9",
     },

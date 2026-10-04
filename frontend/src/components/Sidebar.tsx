@@ -1,14 +1,9 @@
-import { Theme, useTheme } from "@emotion/react";
-import {
-  Link,
-  useLocation,
-  useNavigate,
-  useParams,
-} from "@tanstack/react-router";
+import { type Theme, useTheme } from "@emotion/react";
+import { Link, useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 
-import { api, Conversation, Me } from "../api";
+import { api, type Conversation, type Me } from "../api";
 import { mq } from "../mq";
 import SwipeRow from "./SwipeRow";
 import Wordmark from "./Wordmark";
@@ -28,10 +23,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
   const params = useParams({ strict: false }) as { id?: string };
   const activeId = params.id;
 
-  const { data, mutate } = useSWR<Conversation[]>(
-    "/api/conversations",
-    api.listConversations,
-  );
+  const { data, mutate } = useSWR<Conversation[]>("/api/conversations", api.listConversations);
   const { data: me } = useSWR<Me>("/api/me", api.me);
   const location = useLocation();
   const onSettings = location.pathname === "/settings";
@@ -160,8 +152,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
             aria-hidden
             css={{
               ...theme.typography.caption,
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
               fontSize: 11,
               color: theme.colors.text.muted,
               border: `1px solid ${theme.colors.border}`,
@@ -212,9 +203,7 @@ const Sidebar = ({ onClose, onOpenSearch }: Props) => {
             gap: 8,
             border: "none",
             borderTop: `1px solid ${theme.colors.border}`,
-            background: onSettings
-              ? theme.colors.activity.onSoft
-              : "transparent",
+            background: onSettings ? theme.colors.activity.onSoft : "transparent",
             color: theme.colors.text.main,
             cursor: "pointer",
             textAlign: "left",
@@ -368,16 +357,12 @@ const ConversationRow = ({
             css={{
               display: "block",
               padding: "10px 16px",
-              borderLeft: `2px solid ${
-                active ? theme.colors.activity.on : "transparent"
-              }`,
+              borderLeft: `2px solid ${active ? theme.colors.activity.on : "transparent"}`,
               background: active ? theme.colors.activity.onSoft : "transparent",
               "@media (hover: hover)": {
                 paddingRight: 40,
                 "&:hover": {
-                  background: active
-                    ? theme.colors.activity.onSoft
-                    : theme.colors.background.main,
+                  background: active ? theme.colors.activity.onSoft : theme.colors.background.main,
                 },
               },
             }}

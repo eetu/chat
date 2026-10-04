@@ -1,11 +1,10 @@
-/* eslint-disable react-refresh/only-export-components */
 import { useTheme } from "@emotion/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 
-import { api, ModelCapabilities, Persona, Status } from "../api";
-import Composer, { ComposerSend } from "../components/Composer";
+import { api, type ModelCapabilities, type Persona, type Status } from "../api";
+import Composer, { type ComposerSend } from "../components/Composer";
 import Wordmark from "../components/Wordmark";
 import { mq } from "../mq";
 
@@ -26,22 +25,15 @@ const Landing = () => {
 
   const { data: modelsData } = useSWR("/api/models", api.models);
   const availableModels = useMemo(
-    () =>
-      (modelsData?.models ?? [])
-        .map((m) => m.name)
-        .filter((n): n is string => !!n),
+    () => (modelsData?.models ?? []).map((m) => m.name).filter((n): n is string => !!n),
     [modelsData],
   );
-  if (
-    availableModels.length > 0 &&
-    (!model || !availableModels.includes(model))
-  ) {
+  if (availableModels.length > 0 && (!model || !availableModels.includes(model))) {
     setModel(availableModels[0]);
   }
 
-  const { data: caps } = useSWR<ModelCapabilities>(
-    model ? ["caps", model] : null,
-    () => api.modelCaps(model as string),
+  const { data: caps } = useSWR<ModelCapabilities>(model ? ["caps", model] : null, () =>
+    api.modelCaps(model as string),
   );
 
   const { data: status } = useSWR<Status>("/status", api.status);
@@ -59,14 +51,7 @@ const Landing = () => {
     }
   };
 
-  const onSend = async ({
-    content,
-    images,
-    mode,
-    refine,
-    persona,
-    webSearch,
-  }: ComposerSend) => {
+  const onSend = async ({ content, images, mode, refine, persona, webSearch }: ComposerSend) => {
     const conv = await api.createConversation({ model: model ?? undefined });
     try {
       window.sessionStorage.setItem(

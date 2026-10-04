@@ -3,17 +3,13 @@ import { useRef } from "react";
 import { render } from "vitest-browser-react";
 
 import { lightTheme } from "../../themes";
-import Composer, { ComposerHandle, ComposerSend } from "../Composer";
+import Composer, { type ComposerHandle, type ComposerSend } from "../Composer";
 
 const SEED_PNG_B64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 const SEED_DATA_URL = `data:image/png;base64,${SEED_PNG_B64}`;
 
-const Harness = ({
-  onSendSpy,
-}: {
-  onSendSpy: (payload: ComposerSend) => void;
-}) => {
+const Harness = ({ onSendSpy }: { onSendSpy: (payload: ComposerSend) => void }) => {
   const ref = useRef<ComposerHandle>(null);
   return (
     <ThemeProvider theme={lightTheme}>
@@ -49,16 +45,12 @@ describe("inpaint flow", () => {
 
   test("switches into inpaint, captures a mask, and sends sub_mode=inpaint", async () => {
     const sends: ComposerSend[] = [];
-    const screen = await render(
-      <Harness onSendSpy={(payload) => sends.push(payload)} />,
-    );
+    const screen = await render(<Harness onSendSpy={(payload) => sends.push(payload)} />);
 
     // Wait for the chain seed to auto-attach. Once it does, the
     // remove-attachment X button appears on the thumbnail and the
     // mode pill renders.
-    await expect
-      .element(screen.getByLabelText("remove attachment"))
-      .toBeVisible();
+    await expect.element(screen.getByLabelText("remove attachment")).toBeVisible();
 
     // Pick the inpaint segment in the attachment-mode pill. Single
     // attachment + img2imgAvailable=true is exactly the case where

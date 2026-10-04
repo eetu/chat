@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
 import { useTheme } from "@emotion/react";
 import { createFileRoute, useBlocker, useParams } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -6,13 +5,13 @@ import useSWR from "swr";
 
 import {
   api,
-  Conversation,
+  type Conversation,
   imageUrl,
-  ModelCapabilities,
-  Persona,
-  Status,
+  type ModelCapabilities,
+  type Persona,
+  type Status,
 } from "../api";
-import Composer, { ComposerHandle, ComposerSend } from "../components/Composer";
+import Composer, { type ComposerHandle, type ComposerSend } from "../components/Composer";
 import MaskEditor from "../components/MaskEditor";
 import MessageView from "../components/MessageView";
 import { useChat } from "../hooks/useChat";
@@ -96,10 +95,7 @@ const ChatView = () => {
     "/api/conversations",
     api.listConversations,
   );
-  const conv = useMemo(
-    () => conversations?.find((c) => c.id === id),
-    [conversations, id],
-  );
+  const conv = useMemo(() => conversations?.find((c) => c.id === id), [conversations, id]);
 
   // Per-conversation model state. Seeded from the conversation row on
   // load; falls back to whatever the user last picked in this browser
@@ -126,16 +122,10 @@ const ChatView = () => {
   // pointing at a non-existent model.
   const { data: modelsData } = useSWR("/api/models", api.models);
   const availableModels = useMemo(
-    () =>
-      (modelsData?.models ?? [])
-        .map((m) => m.name)
-        .filter((n): n is string => !!n),
+    () => (modelsData?.models ?? []).map((m) => m.name).filter((n): n is string => !!n),
     [modelsData],
   );
-  if (
-    availableModels.length > 0 &&
-    (!model || !availableModels.includes(model))
-  ) {
+  if (availableModels.length > 0 && (!model || !availableModels.includes(model))) {
     setModel(availableModels[0]);
   }
 
@@ -156,9 +146,8 @@ const ChatView = () => {
 
   // Caps for the active model — drives whether the + image-attach button
   // shows up. SWR keys per model so switching is instant after first fetch.
-  const { data: caps } = useSWR<ModelCapabilities>(
-    model ? ["caps", model] : null,
-    () => api.modelCaps(model as string),
+  const { data: caps } = useSWR<ModelCapabilities>(model ? ["caps", model] : null, () =>
+    api.modelCaps(model as string),
   );
 
   const { data: status } = useSWR<Status>("/status", api.status);
@@ -220,9 +209,7 @@ const ChatView = () => {
         const comma = src.indexOf(",");
         base64 = comma >= 0 ? src.slice(comma + 1) : "";
       } else {
-        const blob = await (
-          await fetch(src, { credentials: "include" })
-        ).blob();
+        const blob = await (await fetch(src, { credentials: "include" })).blob();
         preview = await new Promise<string>((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(String(r.result));
@@ -259,9 +246,7 @@ const ChatView = () => {
         const comma = src.indexOf(",");
         base64 = comma >= 0 ? src.slice(comma + 1) : "";
       } else {
-        const blob = await (
-          await fetch(src, { credentials: "include" })
-        ).blob();
+        const blob = await (await fetch(src, { credentials: "include" })).blob();
         preview = await new Promise<string>((resolve, reject) => {
           const r = new FileReader();
           r.onload = () => resolve(String(r.result));
@@ -360,7 +345,7 @@ const ChatView = () => {
         break;
       }
     }
-    if (!tail || tail.role !== "assistant" || tail.status !== "done") {
+    if (tail?.role !== "assistant" || tail.status !== "done") {
       return null;
     }
     if (tail.images && tail.images.length > 0) {
@@ -371,11 +356,7 @@ const ChatView = () => {
           : `data:image/png;base64,${tail.images[0]}`,
       };
     }
-    if (
-      typeof tail.id === "number" &&
-      tail.image_count &&
-      tail.image_count > 0
-    ) {
+    if (typeof tail.id === "number" && tail.image_count && tail.image_count > 0) {
       return {
         id: `m-${tail.id}-0`,
         url: imageUrl(id, tail.id, 0),
@@ -409,6 +390,7 @@ const ChatView = () => {
     setArmPending(false);
     setPrevStreaming(false);
   }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: jumps to the bottom when the conversation changes
   useEffect(() => {
     scrollToBottom("auto");
   }, [id]);
@@ -504,6 +486,7 @@ const ChatView = () => {
   // On message updates: only follow if the user is already pinned to the
   // bottom. Otherwise leave their scroll position alone.
   const lastMessageContent = messages[messages.length - 1]?.content;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: follows message updates, not scrollToBottom's identity
   useEffect(() => {
     if (stickRef.current) {
       scrollToBottom("auto");
@@ -560,23 +543,13 @@ const ChatView = () => {
                   const next = tIdx >= 0 ? messages[tIdx + 1] : undefined;
                   let modeOverride: "chat" | "image" | undefined;
                   if (next?.role === "assistant") {
-                    const imgCount =
-                      (next.image_count ?? 0) + (next.images?.length ?? 0);
-                    modeOverride =
-                      next.status === "error" || imgCount > 0
-                        ? "image"
-                        : "chat";
+                    const imgCount = (next.image_count ?? 0) + (next.images?.length ?? 0);
+                    modeOverride = next.status === "error" || imgCount > 0 ? "image" : "chat";
                   }
-                  void regenerateFromUser(
-                    uid,
-                    model ?? undefined,
-                    modeOverride,
-                  );
+                  void regenerateFromUser(uid, model ?? undefined, modeOverride);
                 }}
                 onRemix={status?.img2img_available ? onRemix : undefined}
-                onInpaint={
-                  status?.img2img_available ? onInpaintFromAssistant : undefined
-                }
+                onInpaint={status?.img2img_available ? onInpaintFromAssistant : undefined}
                 onEdit={onEdit}
                 ttsAvailable={status?.voice_out_available ?? false}
                 priorUserContent={priorUserContent}

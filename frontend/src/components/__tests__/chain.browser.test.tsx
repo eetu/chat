@@ -3,7 +3,7 @@ import { useRef } from "react";
 import { render } from "vitest-browser-react";
 
 import { lightTheme } from "../../themes";
-import Composer, { ComposerHandle, ComposerSend } from "../Composer";
+import Composer, { type ComposerHandle, type ComposerSend } from "../Composer";
 
 // 1×1 transparent PNG — small enough to inline and recognisable when it
 // flows back through `onSend`'s `images` array.

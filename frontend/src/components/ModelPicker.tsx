@@ -29,9 +29,7 @@ const ModelPicker = ({ value, onChange, disabled }: Props) => {
   const { data, error } = useSWR("/api/models", api.models);
 
   const models = (data?.models ?? []) as ModelEntry[];
-  const names = models
-    .map((m) => m.name ?? m.model ?? "")
-    .filter((n) => n.length > 0);
+  const names = models.map((m) => m.name ?? m.model ?? "").filter((n) => n.length > 0);
   const locked = models.some((m) => m.locked === true);
 
   if (error) {
@@ -70,11 +68,7 @@ const ModelPicker = ({ value, onChange, disabled }: Props) => {
 
   if (names.length === 0) {
     return (
-      <span
-        css={{ ...theme.typography.caption, color: theme.colors.text.muted }}
-      >
-        no models
-      </span>
+      <span css={{ ...theme.typography.caption, color: theme.colors.text.muted }}>no models</span>
     );
   }
 

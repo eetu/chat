@@ -5,9 +5,8 @@ ROOT=$(git rev-parse --show-toplevel)
 STAGED=$(git diff --cached --name-only --diff-filter=ACM)
 
 if echo "$STAGED" | grep -q "^frontend/"; then
-  echo "Running frontend lint + format..."
+  echo "Running frontend lint..."
   (cd "$ROOT/frontend" && yarn lint)
-  (cd "$ROOT/frontend" && yarn format)
 fi
 
 # Any Rust workspace member (backend, shared, mcp) or the root manifest.

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSWRConfig } from "swr";
 
-import { api, imageUrl, maskUrl, Message, streamChat } from "../api";
+import { api, imageUrl, type Message, maskUrl, streamChat } from "../api";
 
 /**
  * Fetch a persisted message's base images as base64 (no `data:`
@@ -39,10 +39,7 @@ const fetchPersistedImages = async (
  * Returns `undefined` on 404 or any failure — the caller treats that
  * as "no mask" and falls back to plain img2img/txt2img routing.
  */
-const fetchPersistedMask = async (
-  convId: string,
-  msgId: number,
-): Promise<string | undefined> => {
+const fetchPersistedMask = async (convId: string, msgId: number): Promise<string | undefined> => {
   try {
     const res = await fetch(maskUrl(convId, msgId), {
       credentials: "include",
@@ -470,11 +467,7 @@ export function useChat(convId: string | undefined) {
         images = target.images;
       } else if (target.image_count && target.image_count > 0) {
         try {
-          images = await fetchPersistedImages(
-            convId,
-            messageId,
-            target.image_count,
-          );
+          images = await fetchPersistedImages(convId, messageId, target.image_count);
         } catch (e) {
           setError(String(e));
           return;
@@ -509,11 +502,7 @@ export function useChat(convId: string | undefined) {
   );
 
   const regenerateFromUser = useCallback(
-    async (
-      userMessageId: number,
-      model?: string,
-      modeOverride?: "chat" | "image",
-    ) => {
+    async (userMessageId: number, model?: string, modeOverride?: "chat" | "image") => {
       if (!convId || streaming) return;
       const idx = messages.findIndex((m) => m.id === userMessageId);
       if (idx === -1) return;
@@ -530,8 +519,7 @@ export function useChat(convId: string | undefined) {
         const next = messages[idx + 1];
         if (next && next.role === "assistant") {
           const nextImg = (next.image_count ?? 0) + (next.images?.length ?? 0);
-          inferredMode =
-            next.status === "error" || nextImg > 0 ? "image" : "chat";
+          inferredMode = next.status === "error" || nextImg > 0 ? "image" : "chat";
         }
       }
       // Persisted user rows only carry an `image_count` — bytes live
@@ -541,11 +529,7 @@ export function useChat(convId: string | undefined) {
       let images = target.images;
       if (!images && target.image_count) {
         try {
-          images = await fetchPersistedImages(
-            convId,
-            userMessageId,
-            target.image_count,
-          );
+          images = await fetchPersistedImages(convId, userMessageId, target.image_count);
         } catch (e) {
           setError(String(e));
           return;
@@ -580,8 +564,7 @@ export function useChat(convId: string | undefined) {
       if (userIdx === -1) return;
       const prior = messages[userIdx];
       const target = messages[idx];
-      const targetImageCount =
-        (target.image_count ?? 0) + (target.images?.length ?? 0);
+      const targetImageCount = (target.image_count ?? 0) + (target.images?.length ?? 0);
       // Error rows only ever come from the image branch (chat-mode
       // failures aren't persisted), so retry them as image regardless of
       // attachment count. For done rows, presence of images is the tell.
@@ -598,11 +581,7 @@ export function useChat(convId: string | undefined) {
       if (typeof prior.id === "number") {
         if (!images && prior.image_count) {
           try {
-            images = await fetchPersistedImages(
-              convId,
-              prior.id,
-              prior.image_count,
-            );
+            images = await fetchPersistedImages(convId, prior.id, prior.image_count);
           } catch (e) {
             setError(String(e));
             return;

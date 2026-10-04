@@ -1,10 +1,5 @@
 import { useTheme } from "@emotion/react";
-import {
-  PointerEvent as ReactPointerEvent,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type PointerEvent as ReactPointerEvent, useEffect, useRef, useState } from "react";
 
 /**
  * Output sent to the parent on "done" — the mask PNG as base64 (no
@@ -130,9 +125,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
   // from a previous resolution is no longer applicable. Compare-prev
   // pattern dodges the "setState in effect" lint without losing
   // correctness; React schedules this with the same render.
-  const naturalSizeKey = naturalSize
-    ? `${naturalSize.width}x${naturalSize.height}`
-    : "";
+  const naturalSizeKey = naturalSize ? `${naturalSize.width}x${naturalSize.height}` : "";
   const [lastNaturalSizeKey, setLastNaturalSizeKey] = useState(naturalSizeKey);
   if (lastNaturalSizeKey !== naturalSizeKey) {
     setLastNaturalSizeKey(naturalSizeKey);
@@ -141,6 +134,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
     setHasStroke(false);
   }
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: onCancel and undo would re-bind the listener every render
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -166,9 +160,6 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-    // onCancel + undo are stable enough not to thrash this listener
-    // every render; intentionally not in the dep array.
-    // eslint-disable-next-line @eslint-react/exhaustive-deps
   }, []);
 
   const snapshot = () => {
@@ -235,10 +226,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
     };
   };
 
-  const drawStrokeSegment = (
-    from: { x: number; y: number },
-    to: { x: number; y: number },
-  ) => {
+  const drawStrokeSegment = (from: { x: number; y: number }, to: { x: number; y: number }) => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext("2d");
     if (!canvas || !ctx) return;
@@ -332,7 +320,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
     drawingRef.current = false;
     lastPointRef.current = null;
     const canvas = canvasRef.current;
-    if (canvas && canvas.hasPointerCapture(e.pointerId)) {
+    if (canvas?.hasPointerCapture(e.pointerId)) {
       canvas.releasePointerCapture(e.pointerId);
     }
   };
@@ -378,13 +366,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
     const previewCtx = preview.getContext("2d");
     let previewUrl: string;
     if (previewCtx && baseImgRef.current?.complete) {
-      previewCtx.drawImage(
-        baseImgRef.current,
-        0,
-        0,
-        preview.width,
-        preview.height,
-      );
+      previewCtx.drawImage(baseImgRef.current, 0, 0, preview.width, preview.height);
       previewCtx.drawImage(canvas, 0, 0);
       previewUrl = preview.toDataURL("image/png");
     } else {
@@ -430,12 +412,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
         }}
       >
         <div css={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <button
-            type="button"
-            aria-label="cancel"
-            onClick={onCancel}
-            css={iconButton}
-          >
+          <button type="button" aria-label="cancel" onClick={onCancel} css={iconButton}>
             <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
               close
             </span>
@@ -534,11 +511,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
               // below is the cursor. Falls back to crosshair / cell when
               // the ring is suppressed (touch / out-of-bounds) so the
               // tool intent stays visible.
-              cursor: cursorOverlay
-                ? "none"
-                : tool === "eraser"
-                  ? "cell"
-                  : "crosshair",
+              cursor: cursorOverlay ? "none" : tool === "eraser" ? "cell" : "crosshair",
               touchAction: "none",
             }}
           />
@@ -635,9 +608,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
             // exclusive recipient of move events for this gesture.
             onPointerDown={(e) => {
               e.stopPropagation();
-              (e.currentTarget as HTMLInputElement).setPointerCapture?.(
-                e.pointerId,
-              );
+              (e.currentTarget as HTMLInputElement).setPointerCapture?.(e.pointerId);
             }}
             aria-label="brush size"
             css={{
@@ -657,8 +628,7 @@ const MaskEditor = ({ imageSrc, onCancel, onDone }: Props) => {
           />
           <span
             css={{
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
               minWidth: 28,
               textAlign: "right",
             }}

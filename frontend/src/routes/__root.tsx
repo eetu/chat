@@ -1,4 +1,3 @@
-/* eslint-disable react-refresh/only-export-components */
 import { useTheme } from "@emotion/react";
 import { createRootRoute, Outlet, useLocation } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -66,17 +65,13 @@ const RootLayout = () => {
             top: 0,
             bottom: 0,
             left: 0,
-            transform:
-              isMobile && !open ? "translateX(-100%)" : "translateX(0)",
+            transform: isMobile && !open ? "translateX(-100%)" : "translateX(0)",
             transition: "transform 200ms ease",
             boxShadow: isMobile && open ? "rgba(0,0,0,0.25) 0 0 24px" : "none",
             display: !isMobile && !open ? "none" : "flex",
           }}
         >
-          <Sidebar
-            onClose={() => setOpen(false)}
-            onOpenSearch={() => setSearchOpen(true)}
-          />
+          <Sidebar onClose={() => setOpen(false)} onOpenSearch={() => setSearchOpen(true)} />
         </div>
 
         {isMobile && open && (
@@ -127,10 +122,7 @@ const RootLayout = () => {
                 },
               }}
             >
-              <span
-                className="material-symbols-outlined"
-                css={{ fontSize: 20 }}
-              >
+              <span className="material-symbols-outlined" css={{ fontSize: 20 }}>
                 menu
               </span>
             </button>

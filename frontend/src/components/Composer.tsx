@@ -1,7 +1,7 @@
-import { Theme, useTheme } from "@emotion/react";
+import { type Theme, useTheme } from "@emotion/react";
 import {
-  KeyboardEvent,
-  Ref,
+  type KeyboardEvent,
+  type Ref,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
@@ -12,7 +12,7 @@ import {
 import { resizeImageForUpload } from "../image";
 import { mq } from "../mq";
 import { resolveSttLang } from "../tts";
-import MaskEditor, { MaskResult } from "./MaskEditor";
+import MaskEditor, { type MaskResult } from "./MaskEditor";
 import ModelPicker from "./ModelPicker";
 
 /**
@@ -29,10 +29,7 @@ export type ComposerHandle = {
    * back here. Sets attachmentMode to "inpaint" and bypasses the
    * attached-change auto-clear so the freshly-paired mask survives
    * the next render. */
-  pushInpaintWithMask: (
-    image: { base64: string; preview: string },
-    mask: MaskResult,
-  ) => void;
+  pushInpaintWithMask: (image: { base64: string; preview: string }, mask: MaskResult) => void;
 };
 
 type Mode = "chat" | "image";
@@ -178,8 +175,7 @@ async function encodeAsWav(blob: Blob): Promise<Blob> {
   const bytes = await blob.arrayBuffer();
   const AC =
     window.AudioContext ??
-    (window as unknown as { webkitAudioContext: typeof AudioContext })
-      .webkitAudioContext;
+    (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
   const ctx = new AC({ sampleRate: 16000 });
   let decoded: AudioBuffer;
   try {
@@ -256,9 +252,7 @@ const Composer = ({
   const [focused, setFocused] = useState(false);
   // Pending image attachments for the next send. Each entry is the raw
   // base64 (no `data:` prefix) that Ollama expects.
-  const [attached, setAttached] = useState<
-    { base64: string; preview: string }[]
-  >([]);
+  const [attached, setAttached] = useState<{ base64: string; preview: string }[]>([]);
   const [dragOver, setDragOver] = useState(false);
   // ComfyUI presence is the single gate for image generation now —
   // every chat model can drive it, so mode is a pure user choice that
@@ -272,9 +266,7 @@ const Composer = ({
   // reload; raw useState setter is renamed off to silence the
   // "setter must be set<State>" lint and avoid accidentally bypassing
   // the persistence helper.
-  // eslint-disable-next-line @eslint-react/use-state
-  const [attachmentMode, persistAttachmentMode] =
-    useState<AttachmentMode>(readAttachmentMode);
+  const [attachmentMode, persistAttachmentMode] = useState<AttachmentMode>(readAttachmentMode);
   const setAttachmentMode = (next: AttachmentMode) => {
     persistAttachmentMode(next);
     writeAttachmentMode(next);
@@ -326,11 +318,7 @@ const Composer = ({
   // Effective send-time mode. With an attachment the routing segment
   // decides: "look only" (off) is the vision-chat path, edit/inpaint
   // are image gen. With no attachment it's the plain chat↔image choice.
-  const effectiveMode: Mode = hasAttachment
-    ? attachmentMode === "off"
-      ? "chat"
-      : "image"
-    : mode;
+  const effectiveMode: Mode = hasAttachment ? (attachmentMode === "off" ? "chat" : "image") : mode;
   // Routing only means anything with an image in hand. Without one the
   // persisted attachmentMode (e.g. a stale "inpaint" from a prior turn)
   // is irrelevant — collapse it to "off" so txt2img isn't mistaken for
@@ -456,7 +444,7 @@ const Composer = ({
   const VAD_SILENCE_MS = 700;
 
   const stopVoiceTracks = () => {
-    voiceStreamRef.current?.getTracks().forEach((t) => t.stop());
+    for (const track of voiceStreamRef.current?.getTracks() ?? []) track.stop();
     voiceStreamRef.current = null;
   };
 
@@ -494,9 +482,7 @@ const Composer = ({
         try {
           const wav = await encodeAsWav(blob);
           const lang = resolveSttLang();
-          const url = lang
-            ? `/api/transcribe?lang=${encodeURIComponent(lang)}`
-            : "/api/transcribe";
+          const url = lang ? `/api/transcribe?lang=${encodeURIComponent(lang)}` : "/api/transcribe";
           const res = await fetch(url, {
             method: "POST",
             credentials: "include",
@@ -508,8 +494,7 @@ const Composer = ({
           const transcript = data.text?.trim() ?? "";
           if (transcript) {
             setValue((prev) => {
-              const sep =
-                prev && !prev.endsWith(" ") && !prev.endsWith("\n") ? " " : "";
+              const sep = prev && !prev.endsWith(" ") && !prev.endsWith("\n") ? " " : "";
               return prev + sep + transcript;
             });
           }
@@ -568,8 +553,7 @@ const Composer = ({
   const startVadLoop = (stream: MediaStream) => {
     const AC =
       window.AudioContext ??
-      (window as unknown as { webkitAudioContext: typeof AudioContext })
-        .webkitAudioContext;
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     const ctx = new AC();
     vadCtxRef.current = ctx;
     const source = ctx.createMediaStreamSource(stream);
@@ -671,6 +655,7 @@ const Composer = ({
     else if (voiceState !== "stopping") stopVoice();
   };
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: unmount cleanup only; the helpers read refs
   useEffect(() => {
     return () => {
       voiceFinalizingRef.current = true;
@@ -717,8 +702,7 @@ const Composer = ({
     if (effectiveMode === "image" && routeMode === "inpaint" && !mask) {
       return;
     }
-    const imgs =
-      attached.length > 0 ? attached.map((a) => a.base64) : undefined;
+    const imgs = attached.length > 0 ? attached.map((a) => a.base64) : undefined;
     let subMode: SubMode | undefined;
     if (effectiveMode === "image") {
       if (routeMode === "inpaint") subMode = "inpaint";
@@ -726,14 +710,10 @@ const Composer = ({
       else if (!imgs) subMode = "txt2img";
     }
     const maskPayload =
-      effectiveMode === "image" && routeMode === "inpaint" && mask
-        ? mask.base64
-        : undefined;
+      effectiveMode === "image" && routeMode === "inpaint" && mask ? mask.base64 : undefined;
     const negativeTrim = negative.trim();
     const negativePayload =
-      effectiveMode === "image" && negativeTrim.length > 0
-        ? negativeTrim
-        : undefined;
+      effectiveMode === "image" && negativeTrim.length > 0 ? negativeTrim : undefined;
     onSend({
       content: trimmed,
       images: imgs,
@@ -812,9 +792,7 @@ const Composer = ({
     modeValue = mode;
     onModeSegment = (v) => setMode(v as Mode);
   }
-  const showModeControl = hasAttachment
-    ? modeSegments.length > 1
-    : imageGenAvailable;
+  const showModeControl = hasAttachment ? modeSegments.length > 1 : imageGenAvailable;
 
   const onDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
     if (!canAttach) return;
@@ -904,6 +882,7 @@ const Composer = ({
   // a ref (not state) so the consumption flag doesn't tick a re-render
   // and re-evaluate this effect right after the setAttached lands.
   const consumedSeedRef = useRef<string | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setAttachmentMode is stable
   useEffect(() => {
     const seed = suggestedSeed;
     if (!seed) return;
@@ -925,9 +904,7 @@ const Composer = ({
           const comma = preview.indexOf(",");
           base64 = comma >= 0 ? preview.slice(comma + 1) : "";
         } else if (seed.url) {
-          const blob = await (
-            await fetch(seed.url, { credentials: "include" })
-          ).blob();
+          const blob = await (await fetch(seed.url, { credentials: "include" })).blob();
           preview = await new Promise<string>((resolve, reject) => {
             const r = new FileReader();
             r.onload = () => resolve(String(r.result));
@@ -952,9 +929,9 @@ const Composer = ({
     return () => {
       cancelled = true;
     };
-    // setAttachmentMode is stable; intentionally not in deps.
   }, [suggestedSeed, attached.length, value.length, streaming]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: built once; it only calls setters and refs
   useImperativeHandle(
     ref,
     () => ({
@@ -983,10 +960,8 @@ const Composer = ({
     [],
   );
 
-  const inpaintReady =
-    !(effectiveMode === "image" && routeMode === "inpaint") || !!mask;
-  const canSend =
-    (!!value.trim() || attached.length > 0) && !streaming && inpaintReady;
+  const inpaintReady = !(effectiveMode === "image" && routeMode === "inpaint") || !!mask;
+  const canSend = (!!value.trim() || attached.length > 0) && !streaming && inpaintReady;
 
   return (
     <div css={{}}>
@@ -1044,40 +1019,38 @@ const Composer = ({
             drop image to attach
           </div>
         )}
-        {attached.length > 0 &&
-          attachmentMode !== "off" &&
-          img2imgAvailable && (
-            <div
+        {attached.length > 0 && attachmentMode !== "off" && img2imgAvailable && (
+          <div
+            css={{
+              display: "inline-flex",
+              alignSelf: "flex-start",
+              alignItems: "center",
+              gap: 6,
+              padding: "3px 8px",
+              margin: "4px 4px 0",
+              borderRadius: 999,
+              border: `1px solid ${theme.colors.border}`,
+              background: theme.colors.activity.onSoft,
+              color: theme.colors.text.main,
+              ...theme.typography.caption,
+            }}
+          >
+            <span
+              className="material-symbols-outlined"
               css={{
-                display: "inline-flex",
-                alignSelf: "flex-start",
-                alignItems: "center",
-                gap: 6,
-                padding: "3px 8px",
-                margin: "4px 4px 0",
-                borderRadius: 999,
-                border: `1px solid ${theme.colors.border}`,
-                background: theme.colors.activity.onSoft,
-                color: theme.colors.text.main,
-                ...theme.typography.caption,
+                fontSize: 14,
+                color: theme.colors.activity.on,
               }}
             >
-              <span
-                className="material-symbols-outlined"
-                css={{
-                  fontSize: 14,
-                  color: theme.colors.activity.on,
-                }}
-              >
-                {attachmentMode === "inpaint" ? "brush" : "auto_awesome"}
-              </span>
-              {attachmentMode === "inpaint"
-                ? mask
-                  ? "inpaint · flux fill · mask ready"
-                  : "inpaint · draw a mask to enable send"
-                : "img2img · flux kontext"}
-            </div>
-          )}
+              {attachmentMode === "inpaint" ? "brush" : "auto_awesome"}
+            </span>
+            {attachmentMode === "inpaint"
+              ? mask
+                ? "inpaint · flux fill · mask ready"
+                : "inpaint · draw a mask to enable send"
+              : "img2img · flux kontext"}
+          </div>
+        )}
         {attached.length > 0 && (
           <div
             css={{
@@ -1093,9 +1066,7 @@ const Composer = ({
               // the unaltered base and the user couldn't tell whether
               // a mask was attached without re-opening the editor.
               const previewSrc =
-                i === 0 && mask && attachmentMode === "inpaint"
-                  ? mask.preview
-                  : a.preview;
+                i === 0 && mask && attachmentMode === "inpaint" ? mask.preview : a.preview;
               return (
                 <div
                   key={a.preview}
@@ -1135,10 +1106,7 @@ const Composer = ({
                       padding: 0,
                     }}
                   >
-                    <span
-                      className="material-symbols-outlined"
-                      css={{ fontSize: 12 }}
-                    >
+                    <span className="material-symbols-outlined" css={{ fontSize: 12 }}>
                       close
                     </span>
                   </button>
@@ -1254,10 +1222,7 @@ const Composer = ({
                   onClick={() => fileInputRef.current?.click()}
                   css={composerSubButtonCss(theme)}
                 >
-                  <span
-                    className="material-symbols-outlined"
-                    css={{ fontSize: 22 }}
-                  >
+                  <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
                     add
                   </span>
                 </button>
@@ -1299,10 +1264,7 @@ const Composer = ({
                       : {}),
                   }}
                 >
-                  <span
-                    className="material-symbols-outlined"
-                    css={{ fontSize: 22 }}
-                  >
+                  <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
                     {voiceState === "idle"
                       ? "mic"
                       : voiceState === "stopping"
@@ -1315,8 +1277,7 @@ const Composer = ({
                     aria-live="polite"
                     css={{
                       ...theme.typography.caption,
-                      fontFamily:
-                        "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
                       color:
                         voiceState === "speaking"
                           ? theme.colors.error
@@ -1360,15 +1321,10 @@ const Composer = ({
                 onClick={() => setMaskEditorOpen(true)}
                 css={{
                   ...composerSubButtonCss(theme),
-                  color: mask
-                    ? theme.colors.activity.on
-                    : theme.colors.text.muted,
+                  color: mask ? theme.colors.activity.on : theme.colors.text.muted,
                 }}
               >
-                <span
-                  className="material-symbols-outlined"
-                  css={{ fontSize: 22 }}
-                >
+                <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
                   {mask ? "brush" : "edit"}
                 </span>
               </button>
@@ -1376,9 +1332,7 @@ const Composer = ({
             {showWebSearchToggle && (
               <button
                 type="button"
-                aria-label={
-                  webSearch ? "turn off web search" : "turn on web search"
-                }
+                aria-label={webSearch ? "turn off web search" : "turn on web search"}
                 title={
                   webSearch
                     ? "web search on — answers cite live pages"
@@ -1388,15 +1342,10 @@ const Composer = ({
                 onClick={toggleWebSearch}
                 css={{
                   ...composerSubButtonCss(theme),
-                  color: webSearch
-                    ? theme.colors.activity.on
-                    : theme.colors.text.muted,
+                  color: webSearch ? theme.colors.activity.on : theme.colors.text.muted,
                 }}
               >
-                <span
-                  className="material-symbols-outlined"
-                  css={{ fontSize: 22 }}
-                >
+                <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
                   travel_explore
                 </span>
               </button>
@@ -1404,9 +1353,7 @@ const Composer = ({
             {showNegativeToggle && (
               <button
                 type="button"
-                aria-label={
-                  negativeOpen ? "hide negative prompt" : "show negative prompt"
-                }
+                aria-label={negativeOpen ? "hide negative prompt" : "show negative prompt"}
                 title={
                   negative.trim().length > 0
                     ? "negative prompt set — click to edit"
@@ -1417,15 +1364,10 @@ const Composer = ({
                 css={{
                   ...composerSubButtonCss(theme),
                   color:
-                    negative.trim().length > 0
-                      ? theme.colors.activity.on
-                      : theme.colors.text.muted,
+                    negative.trim().length > 0 ? theme.colors.activity.on : theme.colors.text.muted,
                 }}
               >
-                <span
-                  className="material-symbols-outlined"
-                  css={{ fontSize: 22 }}
-                >
+                <span className="material-symbols-outlined" css={{ fontSize: 22 }}>
                   block
                 </span>
               </button>
@@ -1463,10 +1405,7 @@ const Composer = ({
                 aria-label="stop generating"
                 css={iconButtonCss(theme.colors.text.main, "#fff")}
               >
-                <span
-                  className="material-symbols-outlined"
-                  css={{ fontSize: 20 }}
-                >
+                <span className="material-symbols-outlined" css={{ fontSize: 20 }}>
                   stop
                 </span>
               </button>
@@ -1484,10 +1423,7 @@ const Composer = ({
                   },
                 }}
               >
-                <span
-                  className="material-symbols-outlined"
-                  css={{ fontSize: 20 }}
-                >
+                <span className="material-symbols-outlined" css={{ fontSize: 20 }}>
                   arrow_upward
                 </span>
               </button>
@@ -1559,9 +1495,7 @@ const SegmentedToggle = ({
               border: "none",
               borderRadius: 6,
               background: active ? theme.colors.activity.onSoft : "transparent",
-              color: active
-                ? theme.colors.activity.on
-                : theme.colors.text.muted,
+              color: active ? theme.colors.activity.on : theme.colors.text.muted,
               cursor: "pointer",
             }}
           >
@@ -1608,10 +1542,7 @@ const RefineControl = ({
       // 8px gap above the button + an 8px breathing margin at the top.
       // Measuring requires the laid-out DOM, so the synchronous set in
       // this layout effect is intentional — it runs before paint, no flash.
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
-      setMaxMenuH(
-        Math.max(160, Math.floor(el.getBoundingClientRect().top - 16)),
-      );
+      setMaxMenuH(Math.max(160, Math.floor(el.getBoundingClientRect().top - 16)));
     };
     measure();
     window.addEventListener("resize", measure);
@@ -1745,9 +1676,7 @@ const RefineControl = ({
                   flex: 1,
                 }}
               >
-                <span css={{ ...theme.typography.body2, fontWeight: 600 }}>
-                  refine prompt
-                </span>
+                <span css={{ ...theme.typography.body2, fontWeight: 600 }}>refine prompt</span>
                 <span
                   css={{
                     ...theme.typography.caption,
@@ -1759,10 +1688,7 @@ const RefineControl = ({
                     : "your prompt is sent to the image model as-is"}
                 </span>
               </div>
-              <span
-                className="material-symbols-outlined"
-                css={{ fontSize: 28, color: accent }}
-              >
+              <span className="material-symbols-outlined" css={{ fontSize: 28, color: accent }}>
                 {refine ? "toggle_on" : "toggle_off"}
               </span>
             </button>
@@ -1803,9 +1729,7 @@ const RefineControl = ({
                         border: "none",
                         borderRadius: 8,
                         padding: "8px 10px",
-                        background: selected
-                          ? theme.colors.activity.onSoft
-                          : "transparent",
+                        background: selected ? theme.colors.activity.onSoft : "transparent",
                         color: theme.colors.text.main,
                         cursor: refine ? "pointer" : "not-allowed",
                         opacity: refine ? 1 : 0.45,

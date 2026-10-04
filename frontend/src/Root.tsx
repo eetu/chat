@@ -1,10 +1,10 @@
 import { Global, ThemeProvider } from "@emotion/react";
-import { ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import { useMediaQuery } from "usehooks-ts";
 
 import {
   readThemeOverride,
-  ThemeOverride,
+  type ThemeOverride,
   ThemeOverrideContext,
   writeThemeOverride,
 } from "./theme";
@@ -12,23 +12,18 @@ import { darkTheme, lightTheme } from "./themes";
 
 const Root = ({ children }: { children: ReactNode }) => {
   const isDarkSystem = useMediaQuery("(prefers-color-scheme: dark)");
-  const [override, setOverride] = useState<ThemeOverride>(() =>
-    readThemeOverride(),
-  );
+  const [override, setOverride] = useState<ThemeOverride>(() => readThemeOverride());
 
   const setOverrideAndPersist = useCallback((next: ThemeOverride) => {
     writeThemeOverride(next);
     setOverride(next);
   }, []);
 
-  const useDark =
-    override === "dark" || (override === "system" && isDarkSystem);
+  const useDark = override === "dark" || (override === "system" && isDarkSystem);
   const theme = useDark ? darkTheme : lightTheme;
 
   return (
-    <ThemeOverrideContext
-      value={{ override, setOverride: setOverrideAndPersist }}
-    >
+    <ThemeOverrideContext value={{ override, setOverride: setOverrideAndPersist }}>
       <ThemeProvider theme={theme}>
         <Global
           styles={{
