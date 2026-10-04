@@ -2,10 +2,10 @@ import "katex/dist/katex.min.css";
 
 import { Global, useTheme } from "@emotion/react";
 import {
-  ComponentProps,
+  type ComponentProps,
   isValidElement,
   memo,
-  ReactNode,
+  type ReactNode,
   useEffect,
   useRef,
   useState,
@@ -17,8 +17,7 @@ import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
-const isExternal = (href: string | undefined) =>
-  !!href && /^https?:\/\//i.test(href);
+const isExternal = (href: string | undefined) => !!href && /^https?:\/\//i.test(href);
 
 /**
  * Pre-process streaming markdown so a half-arrived fenced code block still
@@ -59,9 +58,7 @@ const extractText = (children: ReactNode): string => {
   if (typeof children === "number") return String(children);
   if (Array.isArray(children)) return children.map(extractText).join("");
   if (isValidElement(children)) {
-    return extractText(
-      (children.props as { children?: ReactNode }).children ?? null,
-    );
+    return extractText((children.props as { children?: ReactNode }).children ?? null);
   }
   return "";
 };
@@ -71,8 +68,7 @@ const extractText = (children: ReactNode): string => {
 /// land in every chat session. On parse error we fall back to the
 /// source as a plain code block so a malformed / mid-stream diagram
 /// still shows something readable.
-let mermaidPromise: Promise<(typeof import("mermaid"))["default"]> | null =
-  null;
+let mermaidPromise: Promise<typeof import("mermaid")["default"]> | null = null;
 let mermaidLastTheme: "default" | "dark" | null = null;
 const loadMermaid = async (themeMode: "default" | "dark") => {
   if (!mermaidPromise) {
@@ -90,29 +86,19 @@ const loadMermaid = async (themeMode: "default" | "dark") => {
   return mermaid;
 };
 
-const MermaidDiagram = ({
-  source,
-  dark,
-}: {
-  source: string;
-  dark: boolean;
-}) => {
+const MermaidDiagram = ({ source, dark }: { source: string; dark: boolean }) => {
   const theme = useTheme();
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Lazy state init — Math.random must not run during render.
-  const [diagramId] = useState(
-    () => `mmd-${Math.random().toString(36).slice(2, 10)}`,
-  );
+  const [diagramId] = useState(() => `mmd-${Math.random().toString(36).slice(2, 10)}`);
 
   useEffect(() => {
     let cancelled = false;
     if (!source.trim()) {
       // Intentional reset so a mid-stream empty fence clears any
       // previously-rendered diagram.
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
       setSvg(null);
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
       setError(null);
       return;
     }
@@ -146,10 +132,7 @@ const MermaidDiagram = ({
           overflowX: "auto",
           "& svg": { maxWidth: "100%", height: "auto" },
         }}
-        // Mermaid emits SVG from text we render ourselves with
-        // `securityLevel: "strict"`, which sandboxes scripts and event
-        // handlers. Acceptable use of dangerouslySetInnerHTML.
-        // eslint-disable-next-line @eslint-react/dom-no-dangerously-set-innerhtml
+        // biome-ignore lint/security/noDangerouslySetInnerHtml: Mermaid renders our own text with securityLevel "strict", which strips scripts and handlers
         dangerouslySetInnerHTML={{ __html: svg }}
       />
     );
@@ -197,12 +180,7 @@ const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
   const language = extractLanguage(children);
 
   if (language === "mermaid") {
-    return (
-      <MermaidDiagram
-        source={extractText(children)}
-        dark={theme.mode === "dark"}
-      />
-    );
+    return <MermaidDiagram source={extractText(children)} dark={theme.mode === "dark"} />;
   }
 
   const handleCopy = async () => {
@@ -230,8 +208,7 @@ const CodeBlock = ({ children, ...rest }: ComponentProps<"pre">) => {
             top: 6,
             left: 10,
             padding: "1px 6px",
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
             fontSize: 10,
             letterSpacing: 0.3,
             textTransform: "lowercase",
@@ -325,8 +302,7 @@ const components: ComponentProps<typeof ReactMarkdown>["components"] = {
  */
 const Markdown = ({ children }: { children: string }) => {
   const theme = useTheme();
-  const codeBg =
-    theme.mode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)";
+  const codeBg = theme.mode === "dark" ? "rgba(255,255,255,0.04)" : "rgba(0,0,0,0.04)";
   const fenceBg = theme.mode === "dark" ? "#1a1a1a" : "#f6f7f9";
 
   return (
@@ -362,8 +338,7 @@ const Markdown = ({ children }: { children: string }) => {
             padding: "1px 5px",
             borderRadius: 4,
             fontSize: "0.9em",
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
           },
           pre: {
             background: fenceBg,
@@ -377,8 +352,7 @@ const Markdown = ({ children }: { children: string }) => {
           "pre code": {
             background: "transparent",
             padding: 0,
-            fontFamily:
-              "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
           },
           blockquote: {
             borderLeft: `3px solid ${theme.colors.border}`,

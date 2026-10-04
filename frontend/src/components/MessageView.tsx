@@ -1,14 +1,9 @@
-import { Theme, useTheme } from "@emotion/react";
+import { type Theme, useTheme } from "@emotion/react";
 import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, imageUrl, maskUrl, Message, Source } from "../api";
-import {
-  markdownToSpeech,
-  normalizeVoices,
-  pickVoice,
-  readVoiceOverride,
-} from "../tts";
+import { api, imageUrl, type Message, maskUrl, type Source } from "../api";
+import { markdownToSpeech, normalizeVoices, pickVoice, readVoiceOverride } from "../tts";
 import Markdown from "./Markdown";
 import TypingIndicator from "./TypingIndicator";
 
@@ -75,8 +70,7 @@ type Props = {
 // Optimistic data URL for pre-persistence base64. Concrete MIME so
 // macOS clipboard accepts the Blob — `image/*` wildcards leave
 // `blob.type` empty and the ClipboardItem silently fails.
-const pngDataUrl = (s: string) =>
-  s.startsWith("data:") ? s : `data:image/png;base64,${s}`;
+const pngDataUrl = (s: string) => (s.startsWith("data:") ? s : `data:image/png;base64,${s}`);
 
 type ImageRef = { src: string; isUrl: boolean };
 
@@ -84,12 +78,7 @@ const collectImageRefs = (msg: DisplayMessage, convId?: string): ImageRef[] => {
   if (msg.images && msg.images.length > 0) {
     return msg.images.map((s) => ({ src: pngDataUrl(s), isUrl: false }));
   }
-  if (
-    convId &&
-    typeof msg.id === "number" &&
-    msg.image_count &&
-    msg.image_count > 0
-  ) {
+  if (convId && typeof msg.id === "number" && msg.image_count && msg.image_count > 0) {
     return Array.from({ length: msg.image_count }, (_, idx) => ({
       src: imageUrl(convId, msg.id!, idx),
       isUrl: true,
@@ -375,10 +364,7 @@ const MessageView = ({
                 // image inpaint anyway and storage stores one mask per
                 // row regardless.
                 maskSrc={
-                  idx === 0 &&
-                  msg.has_mask &&
-                  convId &&
-                  typeof msg.id === "number"
+                  idx === 0 && msg.has_mask && convId && typeof msg.id === "number"
                     ? maskUrl(convId, msg.id)
                     : undefined
                 }
@@ -510,9 +496,7 @@ const MessageView = ({
         ) : (
           <Markdown>{msg.content}</Markdown>
         ))}
-      {msg.sources && msg.sources.length > 0 && (
-        <SourcesChip sources={msg.sources} theme={theme} />
-      )}
+      {msg.sources && msg.sources.length > 0 && <SourcesChip sources={msg.sources} theme={theme} />}
       {isError && (
         <ErrorActions
           msg={msg}
@@ -521,9 +505,7 @@ const MessageView = ({
           busy={busy}
         />
       )}
-      {!hasContent && !hasImages && !isPending && !isError && (
-        <TypingIndicator />
-      )}
+      {!hasContent && !hasImages && !isPending && !isError && <TypingIndicator />}
       {showActions && (
         <MessageActions
           msg={msg}
@@ -583,10 +565,7 @@ const UserMessageEditor = ({
           setDraft(e.target.value);
           const el = e.currentTarget;
           el.style.height = "auto";
-          el.style.height = `${Math.min(
-            el.scrollHeight,
-            window.innerHeight * 0.4,
-          )}px`;
+          el.style.height = `${Math.min(el.scrollHeight, window.innerHeight * 0.4)}px`;
         }}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
@@ -725,25 +704,20 @@ const MessageActions = ({
 }) => {
   const theme = useTheme();
   const [flash, setFlash] = useState(false);
-  const [ttsState, setTtsState] = useState<"idle" | "loading" | "playing">(
-    "idle",
-  );
+  const [ttsState, setTtsState] = useState<"idle" | "loading" | "playing">("idle");
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isAssistant = msg.role === "assistant";
   // Pull the live list of loaded voices so we send a slug that actually
   // exists upstream — piper rejects unknown voices with a 4xx. SWR keeps
   // this cached across messages.
-  const { data: voicesData } = useSWR(
-    ttsAvailable ? "/api/voices" : null,
-    api.voices,
-  );
+  const { data: voicesData } = useSWR(ttsAvailable ? "/api/voices" : null, api.voices);
 
   useEffect(() => {
     return () => {
       audioRef.current?.pause();
       const url = audioRef.current?.src;
       audioRef.current = null;
-      if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+      if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
     };
   }, []);
 
@@ -757,7 +731,7 @@ const MessageActions = ({
     }
     const url = audio.src;
     audioRef.current = null;
-    if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
+    if (url?.startsWith("blob:")) URL.revokeObjectURL(url);
   };
 
   const toggleTts = async () => {
@@ -775,12 +749,7 @@ const MessageActions = ({
     setTtsState("loading");
     try {
       const voices = normalizeVoices(voicesData);
-      const voice = pickVoice(
-        msg.content,
-        priorUserContent,
-        voices,
-        readVoiceOverride(),
-      );
+      const voice = pickVoice(msg.content, priorUserContent, voices, readVoiceOverride());
       // Strip markdown so piper doesn't announce "asterisk asterisk"
       // around every emphasized word or read code-fence backticks.
       const spoken = markdownToSpeech(msg.content);
@@ -795,8 +764,7 @@ const MessageActions = ({
         body: JSON.stringify({ text: spoken, voice }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
-      const contentType =
-        res.headers.get("content-type")?.split(";")[0].trim() ?? "audio/wav";
+      const contentType = res.headers.get("content-type")?.split(";")[0].trim() ?? "audio/wav";
       const mseMime = mseMimeFor(contentType);
 
       // MSE path: stream-decode while the body is still arriving. Only
@@ -941,9 +909,7 @@ const MessageActions = ({
       if (firstImage) {
         const raw = await (await fetch(firstImage.src)).blob();
         const blob = new Blob([raw], { type: "image/png" });
-        await navigator.clipboard.write([
-          new ClipboardItem({ "image/png": blob }),
-        ]);
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
       } else if (msg.content) {
         await navigator.clipboard.writeText(msg.content);
       } else {
@@ -1034,12 +1000,7 @@ const MessageActions = ({
         />
       )}
       {onEdit && canMutate && msg.role === "user" && (
-        <ActionButton
-          onClick={() => onEdit()}
-          label="edit and resend"
-          icon="edit"
-          theme={theme}
-        />
+        <ActionButton onClick={() => onEdit()} label="edit and resend" icon="edit" theme={theme} />
       )}
       {onRegenerateFromUser && canMutate && msg.role === "user" && (
         <ActionButton
@@ -1148,13 +1109,7 @@ const CollapsibleCaption = ({ text }: { text: string }) => {
   );
 };
 
-const SourcesChip = ({
-  sources,
-  theme,
-}: {
-  sources: Source[];
-  theme: Theme;
-}) => {
+const SourcesChip = ({ sources, theme }: { sources: Source[]; theme: Theme }) => {
   const pillCss = {
     padding: "1px 6px",
     borderRadius: 4,
@@ -1178,11 +1133,7 @@ const SourcesChip = ({
         color: theme.colors.text.muted,
       }}
     >
-      <span
-        className="material-symbols-outlined"
-        aria-hidden
-        css={{ fontSize: 14 }}
-      >
+      <span className="material-symbols-outlined" aria-hidden css={{ fontSize: 14 }}>
         {anyWeb ? "travel_explore" : "menu_book"}
       </span>
       <span>from</span>
@@ -1207,9 +1158,7 @@ const SourcesChip = ({
           <span
             key={s.name}
             title={
-              typeof s.score === "number"
-                ? `relevance ${(s.score * 100).toFixed(0)}%`
-                : undefined
+              typeof s.score === "number" ? `relevance ${(s.score * 100).toFixed(0)}%` : undefined
             }
             css={pillCss}
           >
@@ -1228,9 +1177,7 @@ const StatsCaption = ({
 }) => {
   const theme = useTheme();
   const tps =
-    stats.tokens_per_sec >= 10
-      ? stats.tokens_per_sec.toFixed(0)
-      : stats.tokens_per_sec.toFixed(1);
+    stats.tokens_per_sec >= 10 ? stats.tokens_per_sec.toFixed(0) : stats.tokens_per_sec.toFixed(1);
   return (
     <span
       css={{
@@ -1342,9 +1289,7 @@ const ImageGenPlaceholder = ({
             css={{
               height: 3,
               borderRadius: 2,
-              background: previewDataUrl
-                ? "rgba(255,255,255,0.25)"
-                : theme.colors.background.main,
+              background: previewDataUrl ? "rgba(255,255,255,0.25)" : theme.colors.background.main,
               overflow: "hidden",
             }}
           >

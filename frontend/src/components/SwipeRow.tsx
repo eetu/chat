@@ -1,5 +1,5 @@
 import { useTheme } from "@emotion/react";
-import { PointerEvent, ReactNode, useRef, useState } from "react";
+import { type PointerEvent, type ReactNode, useRef, useState } from "react";
 
 const REVEAL_PX = 88;
 const TRIGGER_PX = 200;
@@ -44,10 +44,7 @@ const SwipeRow = ({
   const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
     if (e.pointerType !== "touch" || startXRef.current == null) return;
     const delta = e.clientX - startXRef.current;
-    const next = Math.min(
-      0,
-      Math.max(-TRIGGER_PX - 40, startOffsetRef.current + delta),
-    );
+    const next = Math.min(0, Math.max(-TRIGGER_PX - 40, startOffsetRef.current + delta));
     setOffset(next);
   };
 

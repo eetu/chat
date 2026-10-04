@@ -1,9 +1,9 @@
 import { useTheme } from "@emotion/react";
 import { useNavigate } from "@tanstack/react-router";
-import { Fragment, KeyboardEvent, useEffect, useRef, useState } from "react";
+import { Fragment, type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import { api, SearchHit } from "../api";
+import { api, type SearchHit } from "../api";
 import { mq } from "../mq";
 import { stripMarkdown } from "../tts";
 
@@ -45,18 +45,13 @@ const SearchPalette = ({ onClose }: Props) => {
     const trimmed = query.trim();
     if (!trimmed) {
       // Intentional reset — emptying the query clears state immediately.
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
       setHits([]);
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
       setLoading(false);
-      // eslint-disable-next-line @eslint-react/set-state-in-effect
       setError(null);
       return;
     }
     // Mark loading before scheduling the debounced fetch.
-    // eslint-disable-next-line @eslint-react/set-state-in-effect
     setLoading(true);
-    // eslint-disable-next-line @eslint-react/set-state-in-effect
     setError(null);
     let cancelled = false;
     const handle = window.setTimeout(async () => {
@@ -179,8 +174,7 @@ const SearchPalette = ({ onClose }: Props) => {
               padding: "1px 6px",
               border: `1px solid ${theme.colors.border}`,
               borderRadius: 4,
-              fontFamily:
-                "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+              fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
               fontSize: 11,
             }}
           >
@@ -264,9 +258,7 @@ const HitRow = ({
         textAlign: "left",
         background: active ? theme.colors.activity.onSoft : "transparent",
         border: "none",
-        borderLeft: `2px solid ${
-          active ? theme.colors.activity.on : "transparent"
-        }`,
+        borderLeft: `2px solid ${active ? theme.colors.activity.on : "transparent"}`,
         padding: "10px 14px",
         cursor: "pointer",
         display: "flex",
@@ -325,13 +317,11 @@ const HitRow = ({
 /// characters in the result list.
 const renderSnippet = (snippet: string, accent: string) => {
   const parts = stripMarkdown(snippet).split(/(\[[^\]]+\])/g);
-  // The snippet is a flat list of static fragments derived from the
-  // upstream snippet text; index keys are safe — they don't reorder.
   return parts.map((part, i) => {
     if (part.startsWith("[") && part.endsWith("]")) {
       return (
         <mark
-          // eslint-disable-next-line @eslint-react/no-array-index-key
+          // biome-ignore lint/suspicious/noArrayIndexKey: static fragments of one snippet, never reordered
           key={i}
           css={{
             background: "transparent",
@@ -343,7 +333,7 @@ const renderSnippet = (snippet: string, accent: string) => {
         </mark>
       );
     }
-    // eslint-disable-next-line @eslint-react/no-array-index-key
+    // biome-ignore lint/suspicious/noArrayIndexKey: static fragments of one snippet, never reordered
     return <Fragment key={i}>{part}</Fragment>;
   });
 };

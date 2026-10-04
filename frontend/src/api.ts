@@ -100,16 +100,13 @@ const json = async <T>(res: Response): Promise<T> => {
 export const api = {
   me: () => fetch("/api/me", { credentials: "include" }).then(json<Me>),
   status: () => fetch("/status").then(json<Status>),
-  personas: () =>
-    fetch("/api/personas", { credentials: "include" }).then(json<Persona[]>),
+  personas: () => fetch("/api/personas", { credentials: "include" }).then(json<Persona[]>),
   models: () =>
     fetch("/api/models", { credentials: "include" }).then(
       json<{ models?: Array<{ name: string; locked?: boolean }> }>,
     ),
   listConversations: () =>
-    fetch("/api/conversations", { credentials: "include" }).then(
-      json<Conversation[]>,
-    ),
+    fetch("/api/conversations", { credentials: "include" }).then(json<Conversation[]>),
   createConversation: (body?: { title?: string; model?: string }) =>
     fetch("/api/conversations", {
       method: "POST",
@@ -166,17 +163,9 @@ export const api = {
       credentials: "include",
     }).then(json<{ hits: SearchHit[] }>),
   embeddingModels: () =>
-    fetch("/api/embedding-models", { credentials: "include" }).then(
-      json<{ models: string[] }>,
-    ),
-  listDocuments: () =>
-    fetch("/api/documents", { credentials: "include" }).then(json<Document[]>),
-  uploadDocument: (body: {
-    name: string;
-    content_b64: string;
-    mime?: string;
-    model?: string;
-  }) =>
+    fetch("/api/embedding-models", { credentials: "include" }).then(json<{ models: string[] }>),
+  listDocuments: () => fetch("/api/documents", { credentials: "include" }).then(json<Document[]>),
+  uploadDocument: (body: { name: string; content_b64: string; mime?: string; model?: string }) =>
     fetch("/api/documents", {
       method: "POST",
       credentials: "include",
@@ -281,8 +270,7 @@ export async function* streamChat(
     buffer += decoder.decode(value, { stream: true });
 
     // SSE frames are separated by \n\n
-    let sep: number;
-    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+    for (let sep = buffer.indexOf("\n\n"); sep !== -1; sep = buffer.indexOf("\n\n")) {
       const frame = buffer.slice(0, sep);
       buffer = buffer.slice(sep + 2);
       const event = parseFrame(frame);

@@ -2,7 +2,7 @@ import { ThemeProvider } from "@emotion/react";
 import { render } from "vitest-browser-react";
 
 import { lightTheme } from "../../themes";
-import MaskEditor, { MaskResult } from "../MaskEditor";
+import MaskEditor, { type MaskResult } from "../MaskEditor";
 
 // Generate a deterministic test image at runtime via a throwaway canvas
 // so we don't have to hand-encode PNG bytes (and risk a malformed b64
@@ -58,12 +58,8 @@ describe("MaskEditor", () => {
     // canvas sits inside a flex column whose contributing height
     // can fluctuate in headless layouts, but the canvas's intrinsic
     // pixel width is set the moment naturalSize lands.
-    await expect
-      .element(screen.getByLabelText("mask canvas"))
-      .toHaveAttribute("width", "32");
-    const canvas = screen
-      .getByLabelText("mask canvas")
-      .element() as HTMLCanvasElement | null;
+    await expect.element(screen.getByLabelText("mask canvas")).toHaveAttribute("width", "32");
+    const canvas = screen.getByLabelText("mask canvas").element() as HTMLCanvasElement | null;
     expect(canvas).toBeTruthy();
     if (!canvas) return;
 

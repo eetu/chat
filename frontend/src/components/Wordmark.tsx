@@ -31,13 +31,7 @@ const Wordmark = ({ size = 22, short = false }: WordmarkProps) => {
         textDecoration: "none",
       }}
     >
-      <svg
-        width={size}
-        height={size}
-        viewBox="0 0 64 64"
-        fill="none"
-        aria-hidden="true"
-      >
+      <svg width={size} height={size} viewBox="0 0 64 64" fill="none" aria-hidden="true">
         <path
           d="M20 11H44a10 10 0 0 1 10 10V33a10 10 0 0 1-10 10H30l-10 10v-10a10 10 0 0 1-10-10V21a10 10 0 0 1 10-10z"
           stroke="currentColor"
@@ -56,9 +50,7 @@ const Wordmark = ({ size = 22, short = false }: WordmarkProps) => {
           whiteSpace: "nowrap",
         }}
       >
-        {short ? null : (
-          <span css={{ [mq[0]]: { display: "none" } }}>royale with </span>
-        )}
+        {short ? null : <span css={{ [mq[0]]: { display: "none" } }}>royale with </span>}
         chat<span css={{ color: accent }}>.</span>
       </span>
     </Link>

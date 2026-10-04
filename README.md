@@ -83,7 +83,7 @@ the backend on `:8080`.
 ```
 
 This points `core.hooksPath` at `.githooks/`. The pre-commit hook runs
-`yarn lint` + `yarn format` for staged frontend changes and `cargo clippy
+`yarn lint` (Biome: lint and formatting) for staged frontend changes and `cargo clippy
 -- -D warnings` for staged backend changes.
 
 In dev mode (`DEV_AUTH=1`), hitting "sign in" calls `/auth/login` which writes

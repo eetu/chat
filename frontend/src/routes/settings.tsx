@@ -1,17 +1,16 @@
-/* eslint-disable react-refresh/only-export-components */
-import { Theme, useTheme } from "@emotion/react";
+import { type Theme, useTheme } from "@emotion/react";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useRef, useState } from "react";
 import useSWR from "swr";
 
-import { api, Document, Me, Status } from "../api";
+import { api, type Document, type Me, type Status } from "../api";
 import { mq } from "../mq";
-import { ThemeOverride, useThemeOverride } from "../theme";
+import { type ThemeOverride, useThemeOverride } from "../theme";
 import {
   normalizeVoices,
   readSttLangPref,
   readVoiceOverride,
-  SttLangPref,
+  type SttLangPref,
   SUPPORTED_STT_LANGS,
   writeSttLangPref,
   writeVoiceOverride,
@@ -92,11 +91,7 @@ const SettingsView = () => {
         {me && <AccountSection me={me} theme={theme} />}
         <AppearanceSection theme={theme} />
         {(ttsAvailable || sttAvailable) && (
-          <VoiceSection
-            theme={theme}
-            ttsAvailable={ttsAvailable}
-            sttAvailable={sttAvailable}
-          />
+          <VoiceSection theme={theme} ttsAvailable={ttsAvailable} sttAvailable={sttAvailable} />
         )}
         {ragAvailable && <DocumentsSection theme={theme} />}
       </div>
@@ -105,13 +100,8 @@ const SettingsView = () => {
 };
 
 const DocumentsSection = ({ theme }: { theme: Theme }) => {
-  const { data: docs, mutate } = useSWR<Document[]>(
-    "/api/documents",
-    api.listDocuments,
-  );
-  const { data: modelsData } = useSWR("/api/embedding-models", () =>
-    api.embeddingModels(),
-  );
+  const { data: docs, mutate } = useSWR<Document[]>("/api/documents", api.listDocuments);
+  const { data: modelsData } = useSWR("/api/embedding-models", () => api.embeddingModels());
   const models = modelsData?.models ?? [];
   const fileRef = useRef<HTMLInputElement>(null);
   const [model, setModel] = useState<string>(() => {
@@ -200,11 +190,10 @@ const DocumentsSection = ({ theme }: { theme: Theme }) => {
           lineHeight: 1.5,
         }}
       >
-        give the assistant your own notes to consult while answering. upload a
-        text, markdown, or pdf file (manuals work great) and each chat turn
-        quietly looks up the few most relevant passages and feeds them in as
-        background. nothing leaves the box — files live in this user&apos;s
-        sqlite store and are never shared with other accounts.
+        give the assistant your own notes to consult while answering. upload a text, markdown, or
+        pdf file (manuals work great) and each chat turn quietly looks up the few most relevant
+        passages and feeds them in as background. nothing leaves the box — files live in this
+        user&apos;s sqlite store and are never shared with other accounts.
       </p>
       <Row
         label="embedding model"
@@ -215,10 +204,9 @@ const DocumentsSection = ({ theme }: { theme: Theme }) => {
               color: theme.colors.text.muted,
             }}
           >
-            the model that turns text into vectors. picks from whatever ollama
-            has installed locally with the &quot;embedding&quot; capability.
-            switch any time — already-uploaded documents keep their original
-            vectors until you delete and re-upload them.
+            the model that turns text into vectors. picks from whatever ollama has installed locally
+            with the &quot;embedding&quot; capability. switch any time — already-uploaded documents
+            keep their original vectors until you delete and re-upload them.
           </span>
         }
         theme={theme}
@@ -255,46 +243,43 @@ const DocumentsSection = ({ theme }: { theme: Theme }) => {
               color: theme.colors.text.muted,
             }}
           >
-            plain text, markdown, or pdf. pdf text is extracted server-side (no
-            ocr — image-only pdfs come up empty). text is split into overlapping
-            ~800-character windows and embedded once on upload so chat stays
-            fast.
+            plain text, markdown, or pdf. pdf text is extracted server-side (no ocr — image-only
+            pdfs come up empty). text is split into overlapping ~800-character windows and embedded
+            once on upload so chat stays fast.
           </span>
         }
         theme={theme}
       >
-        <>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"
-            disabled={busy || !model}
-            onChange={(e) => {
-              const f = e.target.files?.[0];
-              if (f) void onPickFile(f);
-            }}
-            css={{ display: "none" }}
-          />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={busy || !model}
-            css={{
-              ...theme.typography.body2,
-              fontFamily: theme.fonts.heading,
-              padding: "6px 12px",
-              borderRadius: 4,
-              border: `1px solid ${theme.colors.border}`,
-              background: "transparent",
-              color: theme.colors.text.main,
-              cursor: "pointer",
-              "&:hover": { background: theme.colors.background.main },
-              "&:disabled": { opacity: 0.5, cursor: "default" },
-            }}
-          >
-            {busy ? "ingesting…" : "pick file"}
-          </button>
-        </>
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".txt,.md,.markdown,.pdf,text/plain,text/markdown,application/pdf"
+          disabled={busy || !model}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void onPickFile(f);
+          }}
+          css={{ display: "none" }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={busy || !model}
+          css={{
+            ...theme.typography.body2,
+            fontFamily: theme.fonts.heading,
+            padding: "6px 12px",
+            borderRadius: 4,
+            border: `1px solid ${theme.colors.border}`,
+            background: "transparent",
+            color: theme.colors.text.main,
+            cursor: "pointer",
+            "&:hover": { background: theme.colors.background.main },
+            "&:disabled": { opacity: 0.5, cursor: "default" },
+          }}
+        >
+          {busy ? "ingesting…" : "pick file"}
+        </button>
       </Row>
       {error && (
         <div
@@ -372,10 +357,7 @@ const DocumentsSection = ({ theme }: { theme: Theme }) => {
                 },
               }}
             >
-              <span
-                className="material-symbols-outlined"
-                css={{ fontSize: 18 }}
-              >
+              <span className="material-symbols-outlined" css={{ fontSize: 18 }}>
                 close
               </span>
             </button>
@@ -418,8 +400,8 @@ const AppearanceSection = ({ theme }: { theme: Theme }) => {
               color: theme.colors.text.muted,
             }}
           >
-            system follows the os preference; light / dark force the look
-            regardless of prefers-color-scheme.
+            system follows the os preference; light / dark force the look regardless of
+            prefers-color-scheme.
           </span>
         }
         theme={theme}
@@ -456,14 +438,9 @@ const VoiceSection = ({
   ttsAvailable: boolean;
   sttAvailable: boolean;
 }) => {
-  const { data: voicesData } = useSWR(
-    ttsAvailable ? "/api/voices" : null,
-    api.voices,
-  );
+  const { data: voicesData } = useSWR(ttsAvailable ? "/api/voices" : null, api.voices);
   const voices = useMemo(() => normalizeVoices(voicesData), [voicesData]);
-  const [ttsOverride, setTtsOverride] = useState<string>(
-    () => readVoiceOverride() ?? "auto",
-  );
+  const [ttsOverride, setTtsOverride] = useState<string>(() => readVoiceOverride() ?? "auto");
   const onTtsChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     setTtsOverride(v);
@@ -501,9 +478,9 @@ const VoiceSection = ({
                 color: theme.colors.text.muted,
               }}
             >
-              whisper guesses language from the audio, but short chat utterances
-              confuse it. auto follows your browser locale; pick a specific one
-              if dictation keeps landing in the wrong tongue.
+              whisper guesses language from the audio, but short chat utterances confuse it. auto
+              follows your browser locale; pick a specific one if dictation keeps landing in the
+              wrong tongue.
             </span>
           }
           theme={theme}
@@ -541,8 +518,8 @@ const VoiceSection = ({
                 color: theme.colors.text.muted,
               }}
             >
-              auto picks english / finnish based on the message; override here
-              to force a specific voice.
+              auto picks english / finnish based on the message; override here to force a specific
+              voice.
             </span>
           }
           theme={theme}
@@ -674,8 +651,8 @@ const DeleteAccountRow = ({ me, theme }: { me: Me; theme: Theme }) => {
               color: theme.colors.text.muted,
             }}
           >
-            drops this account and every conversation, message, and attached
-            image. cannot be undone.
+            drops this account and every conversation, message, and attached image. cannot be
+            undone.
           </span>
         }
         theme={theme}
@@ -739,8 +716,7 @@ const DeleteAccountRow = ({ me, theme }: { me: Me; theme: Theme }) => {
                 border: `1px solid ${theme.colors.border}`,
                 background: theme.colors.background.main,
                 color: theme.colors.text.main,
-                fontFamily:
-                  "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
                 fontSize: 13,
                 outline: "none",
                 "&:focus": { borderColor: theme.colors.error },
@@ -764,12 +740,7 @@ const DeleteAccountRow = ({ me, theme }: { me: Me; theme: Theme }) => {
               gap: 8,
             }}
           >
-            <button
-              type="button"
-              onClick={cancel}
-              disabled={busy}
-              css={neutralButton(theme)}
-            >
+            <button type="button" onClick={cancel} disabled={busy} css={neutralButton(theme)}>
               cancel
             </button>
             <button
