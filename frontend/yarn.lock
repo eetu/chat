@@ -1682,7 +1682,7 @@ __metadata:
     babel-plugin-react-compiler: "npm:^1.0.0"
     classnames: "npm:^2.5.1"
     highlight.js: "npm:^11.12.0"
-    katex: "npm:^0.18.9"
+    katex: "npm:^0.19.0"
     mermaid: "npm:^12.0.0"
     playwright: "npm:^1"
     react: "npm:^19.3.0"
@@ -2843,14 +2843,14 @@ __metadata:
   languageName: node
   linkType: hard
 
-"katex@npm:^0.18.9":
-  version: 0.18.9
-  resolution: "katex@npm:0.18.9"
+"katex@npm:^0.19.0":
+  version: 0.19.0
+  resolution: "katex@npm:0.19.0"
   dependencies:
     commander: "npm:^15.0.0"
   bin:
     katex: cli.js
-  checksum: 10/b03a8deb34f0e6574153203aaffe3b6d2fb2c2ea29ac00140f548aa4eda2c776448633aaac804cd49b415826957bf157015dbd6827ad79b75de9d7e8035a0df2
+  checksum: 10/b7122f04ef687fabad397721398ebc74c25df15284ab18815f4815e3632263850daa2bd18eb690c99eacd77f7fc0250d6b73be465e6b0973474873ed21e5d572
   languageName: node
   linkType: hard
 
