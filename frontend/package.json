@@ -35,11 +35,11 @@
   },
   "devDependencies": {
     "@anarkisti/biome-config": "^1.0.0",
-    "@biomejs/biome": "^2.6.6",
+    "@biomejs/biome": "^2.6.8",
     "@tanstack/router-plugin": "^1.169.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.2.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "@vitest/browser-playwright": "^5",
     "babel-plugin-react-compiler": "^1.0.0",
     "playwright": "^1",
